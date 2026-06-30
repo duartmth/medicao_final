@@ -25,9 +25,13 @@ import {
   UserPlus,
   Users,
   ListFilter,
-  Trash
+  Trash,
+  LogOut,
+  LogIn,
+  ShieldCheck
 } from 'lucide-react';
 import { sqlServerDDL, streamlitAppPython, slaMonitorPython } from './data/deliverables';
+import LoginScreen, { UsuarioSimulado, UserType } from './components/LoginScreen';
 
 // =========================================================================
 // INTERFACES & MODELOS DE DADOS DO SIMULADOR (Rastreabilidade do POP)
@@ -127,19 +131,15 @@ const CHECKLIST_MATRIZ: ChecklistItem[] = [
   { id: 11, role: 'QSSMA', descricao: 'Comprovante de destinação de resíduos (MTR / CTR) homologado pelos órgãos.', instrucaoPop: 'POP Seção 7.2: Exigido para resíduos de obras civis ou produtos industriais químicos.' }
 ];
 
-interface UsuarioSimulado {
-  id: string;
-  nome: string;
-  role: Role;
-}
-
 const USUARIOS_PADRAO: UsuarioSimulado[] = [
-  { id: '1', nome: 'Carlos Silva', role: 'MEDICAO' },
-  { id: '2', nome: 'Mariana Costa', role: 'TRABALHISTA' },
-  { id: '3', nome: 'Roberto Dias', role: 'FISCAL' },
-  { id: '4', nome: 'Amanda Oliveira', role: 'TECNICA' },
-  { id: '5', nome: 'Julio Santos', role: 'FINANCEIRA' },
-  { id: '6', nome: 'Fernanda Lima', role: 'QSSMA' }
+  { id: '1', nome: 'Carlos Silva', username: 'carlos.medicao', password: '123', tipo: 'OPERADOR', role: 'MEDICAO' },
+  { id: '2', nome: 'Mariana Costa', username: 'mariana.trabalhista', password: '123', tipo: 'OPERADOR', role: 'TRABALHISTA' },
+  { id: '3', nome: 'Roberto Dias', username: 'roberto.fiscal', password: '123', tipo: 'OPERADOR', role: 'FISCAL' },
+  { id: '4', nome: 'Amanda Oliveira', username: 'amanda.tecnica', password: '123', tipo: 'OPERADOR', role: 'TECNICA' },
+  { id: '5', nome: 'Julio Santos', username: 'julio.financeiro', password: '123', tipo: 'OPERADOR', role: 'FINANCEIRA' },
+  { id: '6', nome: 'Fernanda Lima', username: 'fernanda.qssma', password: '123', tipo: 'OPERADOR', role: 'QSSMA' },
+  { id: '7', nome: 'Administrador Geral', username: 'root', password: 'admin', tipo: 'ROOT', role: 'MEDICAO' },
+  { id: '8', nome: 'Juliana Vieira (Gerente)', username: 'gerente', password: '123', tipo: 'GERENCIADOR', role: 'MEDICAO' }
 ];
 
 interface GRD {
@@ -220,11 +220,15 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'simulator' | 'cadastro' | 'ddl' | 'streamlit' | 'sla'>('simulator');
   const [userRole, setUserRole] = useState<Role>('MEDICAO');
   
+  // Login State
+  const [loggedInUser, setLoggedInUser] = useState<UsuarioSimulado | null>(null);
+
   // Estados do Simulador
   const [grds, setGrds] = useState<GRD[]>([]);
   const [respostas, setRespostas] = useState<RespostaChecklist[]>([]);
   const [simulatedTimeHoursOffset, setSimulatedTimeHoursOffset] = useState<number>(0);
   const [searchText, setSearchText] = useState<string>('');
+  const [grdFilter, setGrdFilter] = useState<'TODAS' | 'AGUARDANDO' | 'CONCLUIDAS'>('TODAS');
 
   // Estados Dinâmicos de Matriz, Usuários & Departamentos
   const [checklistMatriz, setChecklistMatriz] = useState<ChecklistItem[]>([]);
@@ -241,6 +245,7 @@ export default function App() {
   // Form de Novo Usuário
   const [newUserName, setNewUserName] = useState('');
   const [newUserRole, setNewUserRole] = useState<Role>('MEDICAO');
+  const [newUserTipo, setNewUserTipo] = useState<UserType>('OPERADOR');
 
   // Form de Novo Item de Checklist
   const [newItemDesc, setNewItemDesc] = useState('');
@@ -271,7 +276,16 @@ export default function App() {
     const cachedUsuarios = localStorage.getItem('pop_usuarios');
     const cachedSelectedUser = localStorage.getItem('pop_selected_user_id');
     const cachedSetores = localStorage.getItem('pop_setores_config');
+    const cachedLogin = localStorage.getItem('pop_logged_in_user');
     
+    if (cachedLogin) {
+      try {
+        setLoggedInUser(JSON.parse(cachedLogin));
+      } catch (e) {
+        console.error('Erro ao ler usuário logado do cache', e);
+      }
+    }
+
     if (cachedGrds && cachedResp) {
       // Re-parse de datas
       const parsedGrds = JSON.parse(cachedGrds).map((g: any) => ({
@@ -299,20 +313,59 @@ export default function App() {
     }
 
     if (cachedUsuarios) {
-      const parsedUsers = JSON.parse(cachedUsuarios);
-      setUsuarios(parsedUsers);
-      if (cachedSelectedUser) {
-        setSelectedUserId(cachedSelectedUser);
-        const found = parsedUsers.find((u: any) => u.id === cachedSelectedUser);
-        if (found) setUserRole(found.role);
-      } else if (parsedUsers.length > 0) {
-        setSelectedUserId(parsedUsers[0].id);
-        setUserRole(parsedUsers[0].role);
+      try {
+        const rawUsers = JSON.parse(cachedUsuarios);
+        let parsedUsers = rawUsers.map((u: any) => {
+          const generatedUsername = (u.username || u.nome || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '.');
+          const defaultPasswords: Record<string, string> = {
+            '1': '123', '2': '123', '3': '123', '4': '123', '5': '123', '6': '123',
+            'carlos.medicao': '123', 'mariana.trabalhista': '123', 'roberto.fiscal': '123',
+            'amanda.tecnica': '123', 'julio.financeiro': '123', 'fernanda.qssma': '123',
+            'root': 'admin', 'gerente': '123'
+          };
+          const password = u.password || defaultPasswords[u.id] || defaultPasswords[generatedUsername] || '123';
+          
+          let tipo = u.tipo;
+          if (!tipo) {
+            if (generatedUsername === 'root' || (u.nome || '').toLowerCase().includes('admin') || u.id === '7') {
+              tipo = 'ROOT';
+            } else if (generatedUsername === 'gerente' || (u.nome || '').toLowerCase().includes('gerente') || u.id === '8') {
+              tipo = 'GERENCIADOR';
+            } else {
+              tipo = 'OPERADOR';
+            }
+          }
+
+          return {
+            ...u,
+            username: u.username || generatedUsername,
+            password,
+            tipo
+          };
+        });
+
+        // Garantir que todos os USUARIOS_PADRAO padrões existam na lista mesclada por username
+        USUARIOS_PADRAO.forEach(defaultUser => {
+          const exists = parsedUsers.some((pu: any) => pu.username === defaultUser.username || pu.id === defaultUser.id);
+          if (!exists) {
+            parsedUsers.push(defaultUser);
+          }
+        });
+
+        setUsuarios(parsedUsers);
+        if (cachedSelectedUser) {
+          setSelectedUserId(cachedSelectedUser);
+        } else if (parsedUsers.length > 0) {
+          setSelectedUserId(parsedUsers[0].id);
+        }
+      } catch (e) {
+        console.error('Erro ao ler usuários do cache', e);
+        setUsuarios(USUARIOS_PADRAO);
+        setSelectedUserId('1');
       }
     } else {
       setUsuarios(USUARIOS_PADRAO);
       setSelectedUserId('1');
-      setUserRole('MEDICAO');
     }
 
     if (cachedSetores) {
@@ -325,6 +378,29 @@ export default function App() {
       setSimulatedTimeHoursOffset(Number(cachedOffset));
     }
   }, []);
+
+  // Sincronização de Roles e Controle de Abas com base no Login e Usuário Selecionado
+  useEffect(() => {
+    if (loggedInUser) {
+      // Se não for root ou gerenciador, e tentar ver cadastro (Configurações), manda pro simulador
+      if (loggedInUser.tipo !== 'ROOT' && loggedInUser.tipo !== 'GERENCIADOR' && activeTab === 'cadastro') {
+        setActiveTab('simulator');
+      }
+
+      // Se for ROOT, segue o selectedUserId (Operador Ativo)
+      if (loggedInUser.tipo === 'ROOT') {
+        const found = usuarios.find(u => u.id === selectedUserId);
+        if (found) {
+          setUserRole(found.role);
+        } else {
+          setUserRole(loggedInUser.role);
+        }
+      } else {
+        // Se não for ROOT, o operador ativo é fixo em si mesmo
+        setUserRole(loggedInUser.role);
+      }
+    }
+  }, [loggedInUser, selectedUserId, usuarios, activeTab]);
 
   // Salvar alterações no LocalStorage
   const saveSimulatorState = (
@@ -414,7 +490,9 @@ export default function App() {
     saveSimulatorState(updatedGrds, respostas, newOffset);
   };
 
-  const currentUser = usuarios.find(u => u.id === selectedUserId) || { id: '1', nome: 'Carlos Silva', role: 'MEDICAO' as Role };
+  const currentUser = loggedInUser?.tipo === 'ROOT'
+    ? (usuarios.find(u => u.id === selectedUserId) || loggedInUser)
+    : (loggedInUser || usuarios[0] || { id: '1', nome: 'Carlos Silva', role: 'MEDICAO' as Role });
 
   const resetSimulator = () => {
     localStorage.removeItem('pop_grds');
@@ -444,17 +522,22 @@ export default function App() {
     e.preventDefault();
     if (!newUserName.trim()) return;
     const newId = String(usuarios.length > 0 ? Math.max(...usuarios.map(u => Number(u.id))) + 1 : 1);
+    const generatedUsername = newUserName.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '.');
     const newUser: UsuarioSimulado = {
       id: newId,
       nome: newUserName.trim(),
+      username: generatedUsername,
+      password: '123',
+      tipo: newUserTipo,
       role: newUserRole
     };
     const updatedUsers = [...usuarios, newUser];
     setUsuarios(updatedUsers);
     saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, checklistMatriz, updatedUsers, selectedUserId, setoresConfig);
     setNewUserName('');
+    setNewUserTipo('OPERADOR');
     
-    setEvaluationSuccess(`Usuário ${newUser.nome} cadastrado com sucesso no setor ${setoresConfig[newUserRole].nome}!`);
+    setEvaluationSuccess(`Usuário ${newUser.nome} cadastrado com sucesso (login: ${generatedUsername}) no setor ${setoresConfig[newUserRole].nome}!`);
     setTimeout(() => setEvaluationSuccess(null), 4000);
   };
 
@@ -768,12 +851,41 @@ export default function App() {
     }, 2000);
   };
 
-  // Filtro de GRDs baseado em busca de texto
-  const filteredGrds = grds.filter(g => 
-    g.numeroContrato.toLowerCase().includes(searchText.toLowerCase()) ||
-    g.nomeFornecedor.toLowerCase().includes(searchText.toLowerCase()) ||
-    g.id.toString().includes(searchText)
-  );
+  // Filtro de GRDs baseado em busca de texto e status do fluxo de aprovação
+  const filteredGrds = grds.filter(g => {
+    const matchesSearch = g.numeroContrato.toLowerCase().includes(searchText.toLowerCase()) ||
+      g.nomeFornecedor.toLowerCase().includes(searchText.toLowerCase()) ||
+      g.id.toString().includes(searchText);
+
+    if (!matchesSearch) return false;
+
+    if (grdFilter === 'AGUARDANDO') {
+      return g.status === 'EM_ANDAMENTO' || g.status === 'SLA_EXPIRADO';
+    }
+    if (grdFilter === 'CONCLUIDAS') {
+      return g.status === 'APROVADO' || g.status === 'REPROVADO';
+    }
+    return true;
+  });
+
+  const handleLogin = (user: UsuarioSimulado) => {
+    setLoggedInUser(user);
+    localStorage.setItem('pop_logged_in_user', JSON.stringify(user));
+    // Reset selected operator to their own user initially
+    setSelectedUserId(user.id);
+    setUserRole(user.role);
+    localStorage.setItem('pop_selected_user_id', user.id);
+  };
+
+  const handleLogout = () => {
+    setLoggedInUser(null);
+    localStorage.removeItem('pop_logged_in_user');
+    setActiveTab('simulator');
+  };
+
+  if (!loggedInUser) {
+    return <LoginScreen usuarios={usuarios} onLogin={handleLogin} />;
+  }
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans leading-relaxed">
@@ -808,75 +920,122 @@ export default function App() {
             </div>
 
             {/* Seletor de Perfil do Usuário para Simulação Dinâmica */}
-            <div className="flex items-center gap-2 bg-slate-50 border border-indigo-100 rounded-lg p-1.5">
-              <span className="text-xs font-medium text-slate-600 pl-2">Operador Ativo:</span>
-              <select
-                value={selectedUserId}
-                onChange={(e) => {
-                  const uid = e.target.value;
-                  setSelectedUserId(uid);
-                  const found = usuarios.find(u => u.id === uid);
-                  if (found) {
-                    setUserRole(found.role);
-                    localStorage.setItem('pop_selected_user_id', uid);
-                  }
-                }}
-                className="bg-white border border-slate-200 rounded-md text-xs font-semibold py-1 px-3 text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-3xs cursor-pointer"
-              >
-                {usuarios.map(u => (
-                  <option key={u.id} value={u.id}>
-                    {u.nome} ({setoresConfig[u.role]?.nome || u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
+            {loggedInUser?.tipo === 'ROOT' ? (
+              <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg p-1.5 shadow-3xs">
+                <span className="text-xs font-bold text-indigo-750 pl-2 flex items-center gap-1">
+                  🛡️ Assumir Operador (Root):
+                </span>
+                <select
+                  value={selectedUserId}
+                  onChange={(e) => {
+                    const uid = e.target.value;
+                    setSelectedUserId(uid);
+                    const found = usuarios.find(u => u.id === uid);
+                    if (found) {
+                      setUserRole(found.role);
+                      localStorage.setItem('pop_selected_user_id', uid);
+                    }
+                  }}
+                  className="bg-white border border-indigo-200 rounded-md text-xs font-bold py-1 px-3 text-indigo-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-3xs cursor-pointer animate-pulse-slow"
+                >
+                  {usuarios.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.nome} ({setoresConfig[u.role]?.nome || u.role}) — {u.tipo}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg p-1.5 shadow-3xs">
+                <UserCheck className="w-4 h-4 text-emerald-600 ml-2" />
+                <div className="text-left pr-2">
+                  <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Operador Ativo</p>
+                  <p className="text-xs font-bold text-slate-800">
+                    {loggedInUser?.nome} ({setoresConfig[loggedInUser?.role || 'MEDICAO']?.nome || loggedInUser?.role})
+                  </p>
+                </div>
+                <span className="text-[8px] bg-slate-200/80 border border-slate-300 font-bold px-1.5 py-0.5 rounded-md text-slate-600 uppercase">
+                  {loggedInUser?.tipo}
+                </span>
+              </div>
+            )}
+
+            {/* Logout Button */}
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 hover:text-rose-800 text-xs font-bold py-2 px-3.5 rounded-lg transition-colors cursor-pointer shadow-3xs"
+              title="Fazer Logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sair</span>
+            </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 md:px-6">
         {/* BARRA DE ALERTA DO SIMULADOR E CONTROLE DE SLA */}
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-5 mb-6 shadow-xs flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-          <div className="flex items-start gap-3">
-            <div className="p-2.5 bg-slate-50 rounded-xl text-slate-600 border border-slate-200/60 mt-0.5">
-              <Sliders className="w-5 h-5" />
+        {loggedInUser?.tipo === 'ROOT' ? (
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 mb-6 shadow-xs flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-slate-50 rounded-xl text-slate-600 border border-slate-200/60 mt-0.5">
+                <Sliders className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm font-display font-bold text-slate-900">Console de Aceleração do Tempo (Simulador de SLA)</h2>
+                <p className="text-xs text-slate-500 font-sans">
+                  Avance o tempo simulado para testar o gatilho das 48 horas de prazo. Os processos expirados dispararão avisos de atraso em tempo real.
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-sm font-display font-bold text-slate-900">Console de Aceleração do Tempo (Simulador de SLA)</h2>
-              <p className="text-xs text-slate-500 font-sans">
-                Avance o tempo simulado para testar o gatilho das 48 horas de prazo. Os processos expirados dispararão avisos de atraso em tempo real.
-              </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => handleTimeTravel(6)}
+                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+              >
+                +6 Horas
+              </button>
+              <button
+                onClick={() => handleTimeTravel(24)}
+                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+              >
+                +24 Horas (1 Dia)
+              </button>
+              <button
+                onClick={() => handleTimeTravel(48)}
+                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+              >
+                +48 Horas (Estourar SLA)
+              </button>
+              <button
+                onClick={resetSimulator}
+                className="bg-rose-50/60 hover:bg-rose-50 border border-rose-100 text-rose-700 text-xs font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs flex items-center gap-1.5 cursor-pointer"
+                title="Reinicia o banco de dados simulado e limpa o LocalStorage"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Resetar Simulador
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => handleTimeTravel(6)}
-              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-            >
-              +6 Horas
-            </button>
-            <button
-              onClick={() => handleTimeTravel(24)}
-              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-            >
-              +24 Horas (1 Dia)
-            </button>
-            <button
-              onClick={() => handleTimeTravel(48)}
-              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-            >
-              +48 Horas (Estourar SLA)
-            </button>
-            <button
-              onClick={resetSimulator}
-              className="bg-rose-50/60 hover:bg-rose-50 border border-rose-100 text-rose-700 text-xs font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs flex items-center gap-1.5 cursor-pointer"
-              title="Reinicia o banco de dados simulado e limpa o LocalStorage"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Resetar Simulador
-            </button>
+        ) : (
+          <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-2xl p-5 mb-6 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-white/10 backdrop-blur-md rounded-xl text-indigo-300 border border-white/10 mt-0.5">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm font-display font-bold text-white">Ambiente Corporativo de Auditoria de Contratos</h2>
+                <p className="text-xs text-indigo-200/80 font-sans">
+                  Você está autenticado(a) como <strong className="text-white">{loggedInUser?.nome}</strong> ({setoresConfig[loggedInUser?.role || 'MEDICAO']?.nome}). Avalie os requisitos técnicos do seu setor para liberar os pagamentos.
+                </p>
+              </div>
+            </div>
+            <div className="text-[10px] bg-emerald-500/15 border border-emerald-500/25 text-emerald-300 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              SESSÃO SEGURA ATIVA
+            </div>
           </div>
-        </div>
+        )}
 
         {/* NAVEGAÇÃO DOS ENTREGÁVEIS / ABAS */}
         <div className="flex border-b border-slate-200 mb-6 overflow-x-auto scrollbar-none gap-2">
@@ -891,17 +1050,19 @@ export default function App() {
             <UserCheck className="w-4 h-4" />
             Simulador Interativo (Web App)
           </button>
-          <button
-            onClick={() => setActiveTab('cadastro')}
-            className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-              activeTab === 'cadastro'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Settings className="w-4 h-4" />
-            Configurações (Matriz & Usuários)
-          </button>
+          {(loggedInUser?.tipo === 'ROOT' || loggedInUser?.tipo === 'GERENCIADOR') && (
+            <button
+              onClick={() => setActiveTab('cadastro')}
+              className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
+                activeTab === 'cadastro'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              Configurações (Matriz & Usuários)
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('ddl')}
             className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
@@ -1226,7 +1387,7 @@ export default function App() {
 
               {/* DASHBOARD INTEGRADO DE GRDS */}
               <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                <div className="p-5 border-b border-slate-100 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
                   <div>
                     <h3 className="text-sm font-display font-bold text-slate-950 flex items-center gap-2">
                       <Calendar className="w-4 h-4 text-indigo-600" />
@@ -1235,15 +1396,52 @@ export default function App() {
                     <p className="text-xs text-slate-500">Fluxo transacional completo e rastreamento de responsabilidade</p>
                   </div>
 
-                  <div className="relative w-full sm:w-64">
-                    <input
-                      type="text"
-                      placeholder="Buscar Contrato / Fornecedor..."
-                      value={searchText}
-                      onChange={(e) => setSearchText(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-all"
-                    />
-                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                  <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 w-full xl:w-auto">
+                    {/* Filtro por Abas de Status */}
+                    <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs gap-1">
+                      <button
+                        onClick={() => setGrdFilter('TODAS')}
+                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] ${
+                          grdFilter === 'TODAS'
+                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
+                            : 'text-slate-500 hover:text-slate-850'
+                        }`}
+                      >
+                        Todas ({grds.length})
+                      </button>
+                      <button
+                        onClick={() => setGrdFilter('AGUARDANDO')}
+                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] flex items-center gap-1.5 ${
+                          grdFilter === 'AGUARDANDO'
+                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
+                            : 'text-slate-500 hover:text-slate-850'
+                        }`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                        Aguardando Aprovação ({grds.filter(g => g.status === 'EM_ANDAMENTO' || g.status === 'SLA_EXPIRADO').length})
+                      </button>
+                      <button
+                        onClick={() => setGrdFilter('CONCLUIDAS')}
+                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] ${
+                          grdFilter === 'CONCLUIDAS'
+                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
+                            : 'text-slate-500 hover:text-slate-850'
+                        }`}
+                      >
+                        Concluídas ({grds.filter(g => g.status === 'APROVADO' || g.status === 'REPROVADO').length})
+                      </button>
+                    </div>
+
+                    <div className="relative min-w-[200px]">
+                      <input
+                        type="text"
+                        placeholder="Buscar Contrato / Fornecedor..."
+                        value={searchText}
+                        onChange={(e) => setSearchText(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-all"
+                      />
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    </div>
                   </div>
                 </div>
 
@@ -1448,9 +1646,21 @@ export default function App() {
                         onChange={(e) => setNewUserRole(e.target.value as Role)}
                         className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
                       >
-                        {Object.entries(setoresConfig).map(([roleKey, value]) => (
+                        {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
                           <option key={roleKey} value={roleKey}>{value.nome}</option>
                         ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nível de Permissão (Tipo de Usuário)</label>
+                      <select
+                        value={newUserTipo}
+                        onChange={(e) => setNewUserTipo(e.target.value as UserType)}
+                        className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                      >
+                        <option value="OPERADOR">OPERADOR (Acesso restrito ao seu setor)</option>
+                        <option value="GERENCIADOR">GERENCIADOR (Acesso à Auditoria e Configurações)</option>
+                        <option value="ROOT">ROOT (Acesso total + Impersonation + Time Travel)</option>
                       </select>
                     </div>
                     <button
@@ -1472,8 +1682,13 @@ export default function App() {
                     {usuarios.map((user) => (
                       <div key={user.id} className="py-3 flex justify-between items-center gap-2 first:pt-0 last:pb-0">
                         <div>
-                          <p className="text-xs font-bold text-slate-850">{user.nome}</p>
-                          <p className="text-[10px] text-slate-500 font-semibold mt-0.5">{setoresConfig[user.role]?.nome || user.role}</p>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-slate-850">{user.nome}</span>
+                            <span className="text-[8px] bg-slate-100 text-slate-500 font-bold px-1 py-0.2 rounded border uppercase">{user.tipo || 'OPERADOR'}</span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                            {setoresConfig[user.role]?.nome || user.role} • <span className="font-mono bg-slate-50 border border-slate-100 rounded px-1 text-[9px] text-slate-400">login: {user.username || 'n/a'}</span>
+                          </p>
                         </div>
                         <button
                           onClick={() => handleDeleteUser(user.id)}
@@ -1548,7 +1763,7 @@ export default function App() {
                     </form>
                   ) : (
                     <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-                      {Object.entries(setoresConfig).map(([role, info]) => (
+                      {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([role, info]) => (
                         <div key={role} className="p-3 bg-slate-50 border border-slate-150 rounded-xl flex justify-between items-start gap-2">
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5">
@@ -1591,7 +1806,7 @@ export default function App() {
                           onChange={(e) => setNewItemRole(e.target.value as Role)}
                           className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
                         >
-                          {Object.entries(setoresConfig).map(([roleKey, value]) => (
+                          {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
                             <option key={roleKey} value={roleKey}>{value.nome}</option>
                           ))}
                         </select>
@@ -1634,7 +1849,7 @@ export default function App() {
                     Matriz Geral de Itens de Checklist ({checklistMatriz.length} itens)
                   </h3>
                   <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
-                    {Object.entries(setoresConfig).map(([roleKey, value]) => {
+                    {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => {
                       const itemsSetor = checklistMatriz.filter(item => item.role === roleKey);
                       return (
                         <div key={roleKey} className="bg-slate-50/40 border border-slate-150 rounded-xl p-4">

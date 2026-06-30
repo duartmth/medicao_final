@@ -1,0 +1,6 @@
+{
+  "name": "Medição Final de Contratos",
+  "description": "Sistema para digitalização da Medição Final de Contratos, incluindo controle de SLA de 48h, checklists por setor, rastreabilidade de reprovações e documentação técnica.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

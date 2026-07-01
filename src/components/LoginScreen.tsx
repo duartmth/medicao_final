@@ -11,6 +11,7 @@ export interface UsuarioSimulado {
   password?: string;
   tipo: UserType;
   role: Role;
+  email?: string;
 }
 
 interface LoginScreenProps {

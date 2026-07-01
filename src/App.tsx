@@ -28,7 +28,10 @@ import {
   Trash,
   LogOut,
   LogIn,
-  ShieldCheck
+  ShieldCheck,
+  Code,
+  Building2,
+  CheckSquare
 } from 'lucide-react';
 import { sqlServerDDL, streamlitAppPython, slaMonitorPython } from './data/deliverables';
 import LoginScreen, { UsuarioSimulado, UserType } from './components/LoginScreen';
@@ -246,6 +249,17 @@ export default function App() {
   const [newUserName, setNewUserName] = useState('');
   const [newUserRole, setNewUserRole] = useState<Role>('MEDICAO');
   const [newUserTipo, setNewUserTipo] = useState<UserType>('OPERADOR');
+  const [newUserUsername, setNewUserUsername] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+
+  // Configuração Global de SLA e Sub-abas de Configuração
+  const [isTimeTravelEnabled, setIsTimeTravelEnabled] = useState<boolean>(() => {
+    const cached = localStorage.getItem('pop_is_time_travel_enabled');
+    return cached === null ? true : cached === 'true';
+  });
+  const [configSubTab, setConfigSubTab] = useState<'usuarios' | 'departamentos' | 'checklist' | 'dev'>('usuarios');
+  const [devDeliverableTab, setDevDeliverableTab] = useState<'ddl' | 'streamlit' | 'sla_py'>('ddl');
 
   // Form de Novo Item de Checklist
   const [newItemDesc, setNewItemDesc] = useState('');
@@ -431,6 +445,9 @@ export default function App() {
 
   // Cálculo da hora atual simulada baseada no offset
   const getSimulatedTime = () => {
+    if (!isTimeTravelEnabled) {
+      return new Date();
+    }
     return new Date(Date.now() + simulatedTimeHoursOffset * 60 * 60 * 1000);
   };
 
@@ -521,23 +538,38 @@ export default function App() {
   const handleAddUser = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserName.trim()) return;
+    
+    const finalUsername = (newUserUsername.trim() || newUserName.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '.')).trim().toLowerCase();
+    
+    const usernameExists = usuarios.some(u => (u.username || '').toLowerCase() === finalUsername);
+    if (usernameExists) {
+      setValidationError(`Erro: O login "${finalUsername}" já está em uso.`);
+      setTimeout(() => setValidationError(null), 4000);
+      return;
+    }
+
     const newId = String(usuarios.length > 0 ? Math.max(...usuarios.map(u => Number(u.id))) + 1 : 1);
-    const generatedUsername = newUserName.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '.');
     const newUser: UsuarioSimulado = {
       id: newId,
       nome: newUserName.trim(),
-      username: generatedUsername,
-      password: '123',
+      username: finalUsername,
+      password: newUserPassword.trim() || '123',
       tipo: newUserTipo,
-      role: newUserRole
+      role: newUserRole,
+      email: newUserEmail.trim() || undefined
     };
     const updatedUsers = [...usuarios, newUser];
     setUsuarios(updatedUsers);
     saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, checklistMatriz, updatedUsers, selectedUserId, setoresConfig);
+    
+    // Limpar formulário
     setNewUserName('');
+    setNewUserUsername('');
+    setNewUserPassword('');
+    setNewUserEmail('');
     setNewUserTipo('OPERADOR');
     
-    setEvaluationSuccess(`Usuário ${newUser.nome} cadastrado com sucesso (login: ${generatedUsername}) no setor ${setoresConfig[newUserRole].nome}!`);
+    setEvaluationSuccess(`Usuário ${newUser.nome} cadastrado com sucesso (login: ${newUser.username}) no setor ${setoresConfig[newUserRole].nome}!`);
     setTimeout(() => setEvaluationSuccess(null), 4000);
   };
 
@@ -892,14 +924,18 @@ export default function App() {
       {/* HEADER DA PLATAFORMA */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-6 py-4 shadow-xs">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-600 rounded-xl text-white shadow-xs">
+          <div 
+            className="flex items-center gap-3 cursor-pointer select-none group"
+            onClick={() => setActiveTab('simulator')}
+            title="Ir para o Simulador Principal"
+          >
+            <div className="p-2.5 bg-indigo-600 group-hover:bg-indigo-700 rounded-xl text-white shadow-xs transition-colors">
               <FileText className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="text-xl font-display font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              <h1 className="text-xl font-display font-bold text-slate-900 group-hover:text-indigo-600 tracking-tight flex items-center gap-2 transition-colors">
                 Medição Final de Contratos 
-                <span className="text-xs bg-indigo-50 text-indigo-700 font-semibold px-2.5 py-0.5 rounded-md border border-indigo-100">
+                <span className="text-xs bg-indigo-50 text-indigo-700 font-semibold px-2.5 py-0.5 rounded-md border border-indigo-100 group-hover:border-indigo-200 transition-colors">
                   POP Digital
                 </span>
               </h1>
@@ -911,13 +947,23 @@ export default function App() {
 
           <div className="flex items-center flex-wrap gap-3">
             {/* Relógio de Simulação do SLA */}
-            <div className="flex items-center gap-2.5 bg-slate-50 border border-slate-150 rounded-lg px-3.5 py-1.5 shadow-3xs">
-              <Clock className="w-4 h-4 text-slate-500 animate-spin-slow" />
-              <div className="text-left">
-                <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Tempo Simulado (SLA)</p>
-                <p className="text-xs font-mono font-bold text-slate-900">{getSimulatedTimeFormatted()}</p>
+            {isTimeTravelEnabled ? (
+              <div className="flex items-center gap-2.5 bg-slate-50 border border-slate-150 rounded-lg px-3.5 py-1.5 shadow-3xs" title="Modo de SLA Simulado está ATIVO">
+                <Clock className="w-4 h-4 text-slate-500 animate-spin-slow" />
+                <div className="text-left">
+                  <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Tempo Simulado (SLA)</p>
+                  <p className="text-xs font-mono font-bold text-slate-900">{getSimulatedTimeFormatted()}</p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex items-center gap-2.5 bg-emerald-50 border border-emerald-150 rounded-lg px-3.5 py-1.5 shadow-3xs" title="Modo de SLA Simulado está DESATIVADO. Usando relógio real.">
+                <Clock className="w-4 h-4 text-emerald-600" />
+                <div className="text-left">
+                  <p className="text-[9px] text-emerald-600 uppercase font-bold tracking-wider">Tempo Real</p>
+                  <p className="text-xs font-mono font-bold text-emerald-800">{getSimulatedTimeFormatted()}</p>
+                </div>
+              </div>
+            )}
 
             {/* Seletor de Perfil do Usuário para Simulação Dinâmica */}
             {loggedInUser?.tipo === 'ROOT' ? (
@@ -960,6 +1006,21 @@ export default function App() {
               </div>
             )}
 
+            {/* ÍCONE DE ENGRENAGEM (CONFIGURAÇÕES) */}
+            {(loggedInUser?.tipo === 'ROOT' || loggedInUser?.tipo === 'GERENCIADOR') && (
+              <button
+                onClick={() => setActiveTab(activeTab === 'cadastro' ? 'simulator' : 'cadastro')}
+                className={`p-2 rounded-xl border transition-all cursor-pointer shadow-3xs flex items-center justify-center h-9 w-9 ${
+                  activeTab === 'cadastro'
+                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-md'
+                    : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
+                }`}
+                title={activeTab === 'cadastro' ? "Voltar ao Simulador" : "Configurações Gerais"}
+              >
+                <Settings className={`w-4 h-4 ${activeTab === 'cadastro' ? 'animate-spin-slow' : ''}`} />
+              </button>
+            )}
+
             {/* Logout Button */}
             <button
               onClick={handleLogout}
@@ -974,131 +1035,26 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 md:px-6">
-        {/* BARRA DE ALERTA DO SIMULADOR E CONTROLE DE SLA */}
-        {loggedInUser?.tipo === 'ROOT' ? (
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 mb-6 shadow-xs flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-            <div className="flex items-start gap-3">
-              <div className="p-2.5 bg-slate-50 rounded-xl text-slate-600 border border-slate-200/60 mt-0.5">
-                <Sliders className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-sm font-display font-bold text-slate-900">Console de Aceleração do Tempo (Simulador de SLA)</h2>
-                <p className="text-xs text-slate-500 font-sans">
-                  Avance o tempo simulado para testar o gatilho das 48 horas de prazo. Os processos expirados dispararão avisos de atraso em tempo real.
-                </p>
-              </div>
+        {/* BARRA DE ALERTA CORPORATIVA UNIFICADA */}
+        <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-2xl p-5 mb-6 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-fade-in">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-white/10 backdrop-blur-md rounded-xl text-indigo-300 border border-white/10 mt-0.5">
+              <ShieldCheck className="w-5 h-5" />
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => handleTimeTravel(6)}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-              >
-                +6 Horas
-              </button>
-              <button
-                onClick={() => handleTimeTravel(24)}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-              >
-                +24 Horas (1 Dia)
-              </button>
-              <button
-                onClick={() => handleTimeTravel(48)}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
-              >
-                +48 Horas (Estourar SLA)
-              </button>
-              <button
-                onClick={resetSimulator}
-                className="bg-rose-50/60 hover:bg-rose-50 border border-rose-100 text-rose-700 text-xs font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs flex items-center gap-1.5 cursor-pointer"
-                title="Reinicia o banco de dados simulado e limpa o LocalStorage"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Resetar Simulador
-              </button>
+            <div>
+              <h2 className="text-sm font-display font-bold text-white">Ambiente Corporativo de Auditoria de Contratos</h2>
+              <p className="text-xs text-indigo-200/80 font-sans">
+                Você está autenticado(a) como <strong className="text-white">{loggedInUser?.nome}</strong> ({setoresConfig[loggedInUser?.role || 'MEDICAO']?.nome || loggedInUser?.role}). Avalie os requisitos regulamentares para validar os faturamentos.
+              </p>
             </div>
           </div>
-        ) : (
-          <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-2xl p-5 mb-6 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div className="flex items-start gap-3">
-              <div className="p-2.5 bg-white/10 backdrop-blur-md rounded-xl text-indigo-300 border border-white/10 mt-0.5">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-sm font-display font-bold text-white">Ambiente Corporativo de Auditoria de Contratos</h2>
-                <p className="text-xs text-indigo-200/80 font-sans">
-                  Você está autenticado(a) como <strong className="text-white">{loggedInUser?.nome}</strong> ({setoresConfig[loggedInUser?.role || 'MEDICAO']?.nome}). Avalie os requisitos técnicos do seu setor para liberar os pagamentos.
-                </p>
-              </div>
-            </div>
-            <div className="text-[10px] bg-emerald-500/15 border border-emerald-500/25 text-emerald-300 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              SESSÃO SEGURA ATIVA
-            </div>
+          <div className="text-[10px] bg-emerald-500/15 border border-emerald-500/25 text-emerald-300 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shrink-0 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            SESSÃO SEGURA ATIVA
           </div>
-        )}
-
-        {/* NAVEGAÇÃO DOS ENTREGÁVEIS / ABAS */}
-        <div className="flex border-b border-slate-200 mb-6 overflow-x-auto scrollbar-none gap-2">
-          <button
-            onClick={() => setActiveTab('simulator')}
-            className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-              activeTab === 'simulator'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <UserCheck className="w-4 h-4" />
-            Simulador Interativo (Web App)
-          </button>
-          {(loggedInUser?.tipo === 'ROOT' || loggedInUser?.tipo === 'GERENCIADOR') && (
-            <button
-              onClick={() => setActiveTab('cadastro')}
-              className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-                activeTab === 'cadastro'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Settings className="w-4 h-4" />
-              Configurações (Matriz & Usuários)
-            </button>
-          )}
-          <button
-            onClick={() => setActiveTab('ddl')}
-            className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-              activeTab === 'ddl'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Database className="w-4 h-4" />
-            1. Scripts DDL (SQL Server)
-          </button>
-          <button
-            onClick={() => setActiveTab('streamlit')}
-            className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-              activeTab === 'streamlit'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            2. Estrutura Streamlit (Python)
-          </button>
-          <button
-            onClick={() => setActiveTab('sla')}
-            className={`py-3 px-5 text-sm font-display font-bold border-b-2 flex items-center gap-2 whitespace-nowrap transition-all duration-150 cursor-pointer ${
-              activeTab === 'sla'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Clock className="w-4 h-4" />
-            3. Monitoramento SLA (Python)
-          </button>
         </div>
 
-        {/* ABAS DO ENTREGÁVEL */}
+        {/* CONTEÚDO PRINCIPAL DO SIMULADOR OU CONFIGURAÇÕES */}
         {activeTab === 'simulator' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* LADO ESQUERDO: PAINEL DA ÁREA LOGADA */}
@@ -1581,27 +1537,29 @@ export default function App() {
         )}
 
         {activeTab === 'cadastro' && (
-          <div className="space-y-8 animate-fade-in">
-            {/* Cabecalho da Aba de Configuracao */}
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
-              <div className="flex items-center gap-3 mb-2">
+          <div className="space-y-6 animate-fade-in">
+            {/* Cabeçalho do Painel de Controle de Configurações */}
+            <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-indigo-50 text-indigo-700 rounded-xl">
-                  <Sliders className="w-5 h-5" />
+                  <Settings className="w-5 h-5 animate-spin-slow" />
                 </div>
                 <div>
                   <h2 className="text-lg font-display font-bold text-slate-900">Customização Operacional do POP Digital</h2>
-                  <p className="text-xs text-slate-500">Cadastre novos operadores dinâmicos e customize a matriz geral de checklists.</p>
+                  <p className="text-xs text-slate-500">Ajuste os parâmetros do sistema, cadastre novos operadores, configure fluxos e regras de SLA.</p>
                 </div>
               </div>
-              <div className="mt-4 p-3.5 bg-indigo-50/40 border border-indigo-100 rounded-2xl text-xs text-indigo-850 flex items-center gap-2">
-                <AlertTriangle className="w-4.5 h-4.5 text-indigo-600 shrink-0" />
-                <span><strong>Integração com o Simulador:</strong> Todas as alterações nesta tela são salvas imediatamente no LocalStorage do navegador. Os checklists gerados para as novas GRDs criadas pelo setor de medição conterão a sua matriz de requisitos personalizada.</span>
-              </div>
+              <button
+                onClick={() => setActiveTab('simulator')}
+                className="bg-slate-100 hover:bg-slate-200 border border-slate-250 text-slate-700 hover:text-slate-900 text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-3xs shrink-0"
+              >
+                Voltar ao Simulador
+              </button>
             </div>
 
             {/* Painel de Alertas Localizado */}
             {validationError && (
-              <div className="bg-rose-50/60 border border-rose-100 text-rose-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs">
+              <div className="bg-rose-50/60 border border-rose-100 text-rose-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs animate-fade-in">
                 <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                 <div>
                   <h4 className="font-display font-bold text-sm">Atenção</h4>
@@ -1610,7 +1568,7 @@ export default function App() {
               </div>
             )}
             {evaluationSuccess && (
-              <div className="bg-emerald-50/60 border border-emerald-100 text-emerald-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs">
+              <div className="bg-emerald-50/60 border border-emerald-100 text-emerald-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs animate-fade-in">
                 <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                 <div>
                   <h4 className="font-display font-bold text-sm">Sucesso</h4>
@@ -1619,443 +1577,717 @@ export default function App() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* SEÇÃO 1: GERENCIAMENTO DE USUÁRIOS */}
-              <div className="lg:col-span-5 space-y-6">
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                  <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-                    <UserPlus className="w-4.5 h-4.5 text-indigo-600" />
-                    Novo Operador Simulado
-                  </h3>
-                  <form onSubmit={handleAddUser} className="space-y-4">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nome do Operador</label>
-                      <input
-                        type="text"
-                        required
-                        value={newUserName}
-                        onChange={(e) => setNewUserName(e.target.value)}
-                        placeholder="Ex: Amanda Lima"
-                        className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Departamento / Setor de Atuação</label>
-                      <select
-                        value={newUserRole}
-                        onChange={(e) => setNewUserRole(e.target.value as Role)}
-                        className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
-                      >
-                        {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
-                          <option key={roleKey} value={roleKey}>{value.nome}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nível de Permissão (Tipo de Usuário)</label>
-                      <select
-                        value={newUserTipo}
-                        onChange={(e) => setNewUserTipo(e.target.value as UserType)}
-                        className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
-                      >
-                        <option value="OPERADOR">OPERADOR (Acesso restrito ao seu setor)</option>
-                        <option value="GERENCIADOR">GERENCIADOR (Acesso à Auditoria e Configurações)</option>
-                        <option value="ROOT">ROOT (Acesso total + Impersonation + Time Travel)</option>
-                      </select>
-                    </div>
-                    <button
-                      type="submit"
-                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition-colors text-xs flex items-center justify-center gap-2 cursor-pointer shadow-3xs"
-                    >
-                      <UserPlus className="w-4 h-4" />
-                      Cadastrar Operador
-                    </button>
-                  </form>
-                </div>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* SIDEBAR DE SUBMENUS */}
+              <div className="lg:col-span-3 flex flex-col gap-1 bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+                <p className="text-[10px] text-slate-400 uppercase font-black tracking-wider px-2.5 pb-2.5 mb-1.5 border-b border-slate-100">
+                  Configurações
+                </p>
+                
+                <button
+                  onClick={() => setConfigSubTab('usuarios')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl font-display font-bold text-xs flex items-center justify-between transition-all cursor-pointer ${
+                    configSubTab === 'usuarios'
+                      ? 'bg-indigo-600 text-white shadow-3xs'
+                      : 'hover:bg-slate-50 text-slate-650 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Users className="w-4 h-4" />
+                    Usuários
+                  </span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
+                    configSubTab === 'usuarios' ? 'bg-indigo-700/60 text-indigo-50' : 'bg-slate-100 text-slate-500'
+                  }`}>{usuarios.length}</span>
+                </button>
 
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                  <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-                    <Users className="w-4.5 h-4.5 text-indigo-600" />
-                    Operadores Ativos ({usuarios.length})
-                  </h3>
-                  <div className="divide-y divide-slate-100 max-h-[300px] overflow-y-auto pr-1">
-                    {usuarios.map((user) => (
-                      <div key={user.id} className="py-3 flex justify-between items-center gap-2 first:pt-0 last:pb-0">
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold text-slate-850">{user.nome}</span>
-                            <span className="text-[8px] bg-slate-100 text-slate-500 font-bold px-1 py-0.2 rounded border uppercase">{user.tipo || 'OPERADOR'}</span>
+                <button
+                  onClick={() => setConfigSubTab('departamentos')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl font-display font-bold text-xs flex items-center justify-between transition-all cursor-pointer ${
+                    configSubTab === 'departamentos'
+                      ? 'bg-indigo-600 text-white shadow-3xs'
+                      : 'hover:bg-slate-50 text-slate-650 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Building2 className="w-4 h-4" />
+                    Departamentos
+                  </span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
+                    configSubTab === 'departamentos' ? 'bg-indigo-700/60 text-indigo-50' : 'bg-slate-100 text-slate-500'
+                  }`}>{Object.keys(setoresConfig).length}</span>
+                </button>
+
+                <button
+                  onClick={() => setConfigSubTab('checklist')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl font-display font-bold text-xs flex items-center justify-between transition-all cursor-pointer ${
+                    configSubTab === 'checklist'
+                      ? 'bg-indigo-600 text-white shadow-3xs'
+                      : 'hover:bg-slate-50 text-slate-650 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <CheckSquare className="w-4 h-4" />
+                    Check-list
+                  </span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
+                    configSubTab === 'checklist' ? 'bg-indigo-700/60 text-indigo-50' : 'bg-slate-100 text-slate-500'
+                  }`}>{checklistMatriz.length}</span>
+                </button>
+
+                <button
+                  onClick={() => setConfigSubTab('dev')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl font-display font-bold text-xs flex items-center justify-between transition-all cursor-pointer ${
+                    configSubTab === 'dev'
+                      ? 'bg-indigo-600 text-white shadow-3xs'
+                      : 'hover:bg-slate-50 text-slate-650 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Code className={`w-4 h-4 ${configSubTab === 'dev' ? 'text-white' : 'text-indigo-600'}`} />
+                    DEV
+                  </span>
+                  <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                </button>
+              </div>
+
+              {/* CONTEÚDO DINÂMICO DOS SUBMENUS */}
+              <div className="lg:col-span-9 space-y-6">
+                
+                {/* 1. SUBMENU USUÁRIOS */}
+                {configSubTab === 'usuarios' && (
+                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start animate-fade-in">
+                    {/* Formulário de Cadastro de Usuário */}
+                    <div className="xl:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
+                      <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                        <UserPlus className="w-4.5 h-4.5 text-indigo-600" />
+                        Novo Operador Simulado
+                      </h3>
+                      <form onSubmit={handleAddUser} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nome Completo</label>
+                            <input
+                              type="text"
+                              required
+                              value={newUserName}
+                              onChange={(e) => setNewUserName(e.target.value)}
+                              placeholder="Ex: Amanda Lima"
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+                            />
                           </div>
-                          <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
-                            {setoresConfig[user.role]?.nome || user.role} • <span className="font-mono bg-slate-50 border border-slate-100 rounded px-1 text-[9px] text-slate-400">login: {user.username || 'n/a'}</span>
-                          </p>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">E-mail</label>
+                            <input
+                              type="email"
+                              value={newUserEmail}
+                              onChange={(e) => setNewUserEmail(e.target.value)}
+                              placeholder="Ex: amanda.lima@empresa.com"
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+                            />
+                          </div>
                         </div>
-                        <button
-                          onClick={() => handleDeleteUser(user.id)}
-                          className="text-rose-500 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                          title="Remover operador"
-                        >
-                          <Trash className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
 
-                {/* PAINEL DINÂMICO DE CONTROLE DE DEPARTAMENTOS */}
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                  <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-                    <Sliders className="w-4.5 h-4.5 text-indigo-600" />
-                    Controle de Departamentos / Setores ({Object.keys(setoresConfig).length})
-                  </h3>
-                  
-                  {editingRole ? (
-                    <form onSubmit={handleSaveSectorEdit} className="space-y-4">
-                      <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
-                        <p className="text-[10px] text-indigo-800 uppercase font-bold tracking-wider">Editando Departamento</p>
-                        <p className="text-xs font-bold text-indigo-900">{editingRole}</p>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Nome do Setor</label>
-                        <input
-                          type="text"
-                          required
-                          value={editSectorNome}
-                          onChange={(e) => setEditSectorNome(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Descrição</label>
-                        <textarea
-                          required
-                          rows={2}
-                          value={editSectorDesc}
-                          onChange={(e) => setEditSectorDesc(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 resize-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Mandato / Responsabilidade</label>
-                        <textarea
-                          required
-                          rows={2}
-                          value={editSectorResp}
-                          onChange={(e) => setEditSectorResp(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 resize-none"
-                        />
-                      </div>
-                      <div className="flex gap-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nome de Login (Username)</label>
+                            <input
+                              type="text"
+                              value={newUserUsername}
+                              onChange={(e) => setNewUserUsername(e.target.value)}
+                              placeholder="Auto-gerado se vazio"
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Senha de Acesso</label>
+                            <input
+                              type="password"
+                              value={newUserPassword}
+                              onChange={(e) => setNewUserPassword(e.target.value)}
+                              placeholder="Padrão: 123"
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Departamento / Setor de Atuação</label>
+                            <select
+                              value={newUserRole}
+                              onChange={(e) => setNewUserRole(e.target.value as Role)}
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                            >
+                              {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
+                                <option key={roleKey} value={roleKey}>{value.nome}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nível de Permissão (Tipo de Usuário)</label>
+                            <select
+                              value={newUserTipo}
+                              onChange={(e) => setNewUserTipo(e.target.value as UserType)}
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                            >
+                              <option value="OPERADOR">OPERADOR (Acesso restrito ao seu setor)</option>
+                              <option value="GERENCIADOR">GERENCIADOR (Acesso à Auditoria e Configurações)</option>
+                              <option value="ROOT">ROOT (Acesso total + Impersonation + Time Travel)</option>
+                            </select>
+                          </div>
+                        </div>
+
                         <button
                           type="submit"
-                          className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-xl transition-colors text-xs cursor-pointer shadow-3xs"
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition-colors text-xs flex items-center justify-center gap-2 cursor-pointer shadow-3xs"
                         >
-                          Salvar Setor
+                          <UserPlus className="w-4 h-4" />
+                          Cadastrar Operador
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingRole(null)}
-                          className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-3 rounded-xl transition-colors text-xs cursor-pointer"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-                      {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([role, info]) => (
-                        <div key={role} className="p-3 bg-slate-50 border border-slate-150 rounded-xl flex justify-between items-start gap-2">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`w-2 h-2 rounded-full bg-indigo-600`}></span>
-                              <p className="text-xs font-bold text-slate-850">{info.nome}</p>
+                      </form>
+                    </div>
+
+                    {/* Lista de Usuários Ativos */}
+                    <div className="xl:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
+                      <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                        <Users className="w-4.5 h-4.5 text-indigo-600" />
+                        Usuários Ativos ({usuarios.length})
+                      </h3>
+                      <div className="divide-y divide-slate-100 max-h-[450px] overflow-y-auto pr-1">
+                        {usuarios.map((user) => (
+                          <div key={user.id} className="py-3.5 flex justify-between items-start gap-2 first:pt-0 last:pb-0">
+                            <div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-bold text-slate-850">{user.nome}</span>
+                                <span className="text-[8px] bg-slate-100 border border-slate-200 text-slate-500 font-bold px-1.5 py-0.2 rounded uppercase">{user.tipo || 'OPERADOR'}</span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 font-semibold mt-1">
+                                {setoresConfig[user.role]?.nome || user.role}
+                              </p>
+                              {user.email && (
+                                <p className="text-[10px] text-indigo-600 font-mono mt-0.5">
+                                  {user.email}
+                                </p>
+                              )}
+                              <p className="text-[10px] text-slate-400 font-mono mt-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5 inline-block">
+                                login: <strong className="text-slate-700">{user.username}</strong> {user.password && <>| senha: <span className="text-slate-500">{user.password}</span></>}
+                              </p>
                             </div>
-                            <p className="text-[10px] text-slate-500 leading-normal line-clamp-2">{info.descricao}</p>
+                            <button
+                              onClick={() => handleDeleteUser(user.id)}
+                              className="text-rose-500 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                              title="Remover operador"
+                            >
+                              <Trash className="w-4.5 h-4.5" />
+                            </button>
                           </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. SUBMENU DEPARTAMENTOS */}
+                {configSubTab === 'departamentos' && (
+                  <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs animate-fade-in">
+                    <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                      <Building2 className="w-4.5 h-4.5 text-indigo-600" />
+                      Controle de Departamentos / Setores ({Object.keys(setoresConfig).length})
+                    </h3>
+                    
+                    {editingRole ? (
+                      <form onSubmit={handleSaveSectorEdit} className="space-y-4 max-w-xl">
+                        <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+                          <p className="text-[10px] text-indigo-800 uppercase font-bold tracking-wider">Editando Departamento</p>
+                          <p className="text-xs font-bold text-indigo-900">{editingRole}</p>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Nome do Setor</label>
+                          <input
+                            type="text"
+                            required
+                            value={editSectorNome}
+                            onChange={(e) => setEditSectorNome(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-850 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Descrição</label>
+                          <textarea
+                            required
+                            rows={2}
+                            value={editSectorDesc}
+                            onChange={(e) => setEditSectorDesc(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-850 focus:outline-none focus:border-indigo-500 resize-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Mandato / Responsabilidade</label>
+                          <textarea
+                            required
+                            rows={2}
+                            value={editSectorResp}
+                            onChange={(e) => setEditSectorResp(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-850 focus:outline-none focus:border-indigo-500 resize-none"
+                          />
+                        </div>
+                        <div className="flex gap-2">
                           <button
-                            onClick={() => {
-                              setEditingRole(role as Role);
-                              setEditSectorNome(info.nome);
-                              setEditSectorDesc(info.descricao);
-                              setEditSectorResp(info.responsabilidade);
-                            }}
-                            className="text-indigo-600 hover:text-indigo-800 p-1 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 rounded-lg transition-all text-[10px] font-bold cursor-pointer shrink-0"
+                            type="submit"
+                            className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-xl transition-colors text-xs cursor-pointer shadow-3xs"
                           >
-                            Editar
+                            Salvar Setor
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRole(null)}
+                            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-3 rounded-xl transition-colors text-xs cursor-pointer"
+                          >
+                            Cancelar
                           </button>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* SEÇÃO 2: GERENCIAMENTO DA MATRIZ DO CHECKLIST */}
-              <div className="lg:col-span-7 space-y-6">
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                  <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-                    <PlusCircle className="w-4.5 h-4.5 text-indigo-600" />
-                    Adicionar Requisito à Matriz de Conformidade
-                  </h3>
-                  <form onSubmit={handleAddChecklistItem} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Setor de Avaliação</label>
-                        <select
-                          value={newItemRole}
-                          onChange={(e) => setNewItemRole(e.target.value as Role)}
-                          className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
-                        >
-                          {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
-                            <option key={roleKey} value={roleKey}>{value.nome}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Instrução Regulamentar (POP)</label>
-                        <input
-                          type="text"
-                          value={newItemPop}
-                          onChange={(e) => setNewItemPop(e.target.value)}
-                          placeholder="Ex: POP-CON-04, Item 2.4"
-                          className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Descrição Técnica da Obrigação a Auditar</label>
-                      <textarea
-                        required
-                        rows={2}
-                        value={newItemDesc}
-                        onChange={(e) => setNewItemDesc(e.target.value)}
-                        placeholder="Descreva claramente o que o auditor especialista do setor deve conferir nos documentos apresentados (Ex: Conferência do recolhimento de FGTS de todos os colaboradores do mês da medição)."
-                        className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition-colors text-xs flex items-center justify-center gap-2 cursor-pointer shadow-3xs"
-                    >
-                      <PlusCircle className="w-4 h-4" />
-                      Adicionar Requisito na Matriz Geral
-                    </button>
-                  </form>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                  <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-                    <ListFilter className="w-4.5 h-4.5 text-indigo-600" />
-                    Matriz Geral de Itens de Checklist ({checklistMatriz.length} itens)
-                  </h3>
-                  <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
-                    {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => {
-                      const itemsSetor = checklistMatriz.filter(item => item.role === roleKey);
-                      return (
-                        <div key={roleKey} className="bg-slate-50/40 border border-slate-150 rounded-xl p-4">
-                          <h4 className="text-xs font-bold text-slate-800 flex items-center justify-between gap-2 border-b border-slate-200/60 pb-2 mb-2.5">
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
-                              {value.nome}
-                            </span>
-                            <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full font-bold">
-                              {itemsSetor.length} {itemsSetor.length === 1 ? 'requisito' : 'requisitos'}
-                            </span>
-                          </h4>
-                          {itemsSetor.length === 0 ? (
-                            <p className="text-[11px] text-slate-400 italic py-1 pl-1">Nenhum item cadastrado para esta área. Esse setor será aprovado automaticamente em novas GRDs por falta de obrigações.</p>
-                          ) : (
-                            <div className="space-y-2 divide-y divide-slate-150">
-                              {itemsSetor.map((item, idx) => (
-                                <div key={item.id} className={`flex justify-between items-start gap-4 ${idx > 0 ? 'pt-2.5' : ''}`}>
-                                  <div className="space-y-0.5">
-                                    <p className="text-xs text-slate-850 font-sans leading-relaxed">
-                                      <span className="font-mono text-[10px] text-indigo-600 font-bold mr-1.5 bg-indigo-50/50 border border-indigo-100/50 px-1.5 py-0.5 rounded">ID #{item.id}</span>
-                                      {item.descricao}
-                                    </p>
-                                    <p className="text-[10px] text-slate-500 font-medium">
-                                      Referência Regulamentar: <strong className="text-indigo-600 font-mono">{item.instrucaoPop}</strong>
-                                    </p>
-                                  </div>
-                                  <button
-                                    onClick={() => handleDeleteChecklistItem(item.id)}
-                                    className="text-rose-500 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
-                                    title="Excluir da matriz"
-                                  >
-                                    <Trash className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              ))}
+                      </form>
+                    ) : (
+                      <div className="space-y-3">
+                        {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([role, info]) => (
+                          <div key={role} className="p-4 bg-slate-50 border border-slate-150 rounded-xl flex justify-between items-start gap-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                                <p className="text-xs font-bold text-slate-850">{info.nome}</p>
+                              </div>
+                              <p className="text-[11px] text-slate-505 leading-relaxed">{info.descricao}</p>
+                              <p className="text-[10px] text-indigo-600 font-semibold mt-1">Responsabilidade: {info.responsabilidade}</p>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                            <button
+                              onClick={() => {
+                                setEditingRole(role as Role);
+                                setEditSectorNome(info.nome);
+                                setEditSectorDesc(info.descricao);
+                                setEditSectorResp(info.responsabilidade);
+                              }}
+                              className="text-indigo-600 hover:text-indigo-800 p-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 rounded-lg transition-all text-xs font-bold cursor-pointer shrink-0"
+                            >
+                              Editar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'ddl' && (
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/50">
-              <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2">
-                  <Database className="w-5 h-5 text-indigo-600" />
-                  Modelo Relacional - DDL Microsoft SQL Server
-                </h3>
-                <p className="text-xs text-slate-500">Scripts prontos para produção com índices, PKs, FKs e restrição de justificativa de reprovações.</p>
-              </div>
-              <button
-                onClick={() => copyToClipboard(sqlServerDDL, 'ddl')}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-2 cursor-pointer shadow-3xs transition-all"
-              >
-                {copiedKey === 'ddl' ? (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-500" />
-                    Copiado!
-                  </>
-                ) : (
-                  <>
-                    <Clipboard className="w-4 h-4 text-slate-500" />
-                    Copiar Script DDL
-                  </>
                 )}
-              </button>
-            </div>
-            
-            <div className="p-5 bg-slate-950 overflow-x-auto">
-              <pre className="text-xs font-mono text-slate-200 leading-relaxed max-h-[500px]">
-                {sqlServerDDL}
-              </pre>
-            </div>
 
-            <div className="p-5 border-t border-slate-100 bg-slate-50/50">
-              <h4 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Destaques da Arquitetura do Banco de Dados:</h4>
-              <ul className="text-xs text-slate-600 space-y-2 list-disc list-inside">
-                <li>
-                  <strong className="text-slate-800">Garantia Relacional do POP:</strong> Utilização de <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">CONSTRAINT CHECK</code> para impedir de maneira estrita a gravação de itens como "REPROVADO" sem que haja uma justificativa textual de pelo menos 10 caracteres.
-                </li>
-                <li>
-                  <strong className="text-slate-800">Otimização de Índices:</strong> Criação de índices não clusterizados na coluna <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">SlaLimite</code> e <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">GRDID</code> para acelerar os robôs e jobs automáticos de varredura de SLA de 48 horas.
-                </li>
-              </ul>
-            </div>
-          </div>
-        )}
+                {/* 3. SUBMENU CHECK-LIST */}
+                {configSubTab === 'checklist' && (
+                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start animate-fade-in">
+                    {/* Cadastrar Novo Requisito */}
+                    <div className="xl:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
+                      <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                        <PlusCircle className="w-4.5 h-4.5 text-indigo-600" />
+                        Adicionar Requisito à Matriz
+                      </h3>
+                      <form onSubmit={handleAddChecklistItem} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Setor de Avaliação</label>
+                            <select
+                              value={newItemRole}
+                              onChange={(e) => setNewItemRole(e.target.value as Role)}
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                            >
+                              {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => (
+                                <option key={roleKey} value={roleKey}>{value.nome}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Instrução Regulamentar (POP)</label>
+                            <input
+                              type="text"
+                              value={newItemPop}
+                              onChange={(e) => setNewItemPop(e.target.value)}
+                              placeholder="Ex: POP-CON-04, Item 2.4"
+                              className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Descrição Técnica do Requisito</label>
+                          <textarea
+                            required
+                            rows={3}
+                            value={newItemDesc}
+                            onChange={(e) => setNewItemDesc(e.target.value)}
+                            placeholder="Descreva claramente o que deve ser auditado..."
+                            className="w-full bg-slate-50/50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-850 placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition-colors text-xs flex items-center justify-center gap-2 cursor-pointer shadow-3xs"
+                        >
+                          <PlusCircle className="w-4 h-4" />
+                          Adicionar Requisito
+                        </button>
+                      </form>
+                    </div>
 
-        {activeTab === 'streamlit' && (
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/50">
-              <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-indigo-600" />
-                  Estrutura Streamlit Front-end (Python)
-                </h3>
-                <p className="text-xs text-slate-500">Estrutura em Python utilizando o Streamlit para controle de sessão, filtragem dinâmica do banco e validação do POP.</p>
-              </div>
-              <button
-                onClick={() => copyToClipboard(streamlitAppPython, 'streamlit')}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-2 cursor-pointer shadow-3xs transition-all"
-              >
-                {copiedKey === 'streamlit' ? (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-500" />
-                    Copiado!
-                  </>
-                ) : (
-                  <>
-                    <Clipboard className="w-4 h-4 text-slate-500" />
-                    Copiar Código Python
-                  </>
+                    {/* Matriz Geral de Requisitos */}
+                    <div className="xl:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
+                      <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                        <ListFilter className="w-4.5 h-4.5 text-indigo-600" />
+                        Requisitos Ativos ({checklistMatriz.length} itens)
+                      </h3>
+                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+                        {(Object.entries(setoresConfig) as [Role, SetorInfo][]).map(([roleKey, value]) => {
+                          const itemsSetor = checklistMatriz.filter(item => item.role === roleKey);
+                          return (
+                            <div key={roleKey} className="bg-slate-50/40 border border-slate-150 rounded-xl p-4">
+                              <h4 className="text-xs font-bold text-slate-800 flex items-center justify-between gap-2 border-b border-slate-200/60 pb-2 mb-2.5">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
+                                  {value.nome}
+                                </span>
+                                <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full font-bold">
+                                  {itemsSetor.length} {itemsSetor.length === 1 ? 'requisito' : 'requisitos'}
+                                </span>
+                              </h4>
+                              {itemsSetor.length === 0 ? (
+                                <p className="text-[11px] text-slate-400 italic py-1 pl-1">Nenhum item cadastrado para esta área. Esse setor será aprovado automaticamente em novas GRDs por falta de obrigações.</p>
+                              ) : (
+                                <div className="space-y-2 divide-y divide-slate-150">
+                                  {itemsSetor.map((item, idx) => (
+                                    <div key={item.id} className={`flex justify-between items-start gap-4 ${idx > 0 ? 'pt-2.5' : ''}`}>
+                                      <div className="space-y-0.5">
+                                        <p className="text-xs text-slate-850 font-sans leading-relaxed">
+                                          <span className="font-mono text-[10px] text-indigo-600 font-bold mr-1.5 bg-indigo-50/50 border border-indigo-100/50 px-1.5 py-0.5 rounded">ID #{item.id}</span>
+                                          {item.descricao}
+                                        </p>
+                                        <p className="text-[10px] text-slate-500 font-medium">
+                                          Referência Regulamentar: <strong className="text-indigo-600 font-mono">{item.instrucaoPop}</strong>
+                                        </p>
+                                      </div>
+                                      <button
+                                        onClick={() => handleDeleteChecklistItem(item.id)}
+                                        className="text-rose-500 hover:text-rose-700 p-1.5 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                                        title="Excluir da matriz"
+                                      >
+                                        <Trash className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 )}
-              </button>
-            </div>
-            
-            <div className="p-5 bg-slate-950 overflow-x-auto">
-              <pre className="text-xs font-mono text-slate-200 leading-relaxed max-h-[500px]">
-                {streamlitAppPython}
-              </pre>
-            </div>
 
-            <div className="p-5 border-t border-slate-100 bg-slate-50/50">
-              <h4 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Explicação da Lógica de Front-end no Streamlit:</h4>
-              <ul className="text-xs text-slate-600 space-y-2 list-disc list-inside">
-                <li>
-                  <strong className="text-slate-800">Controle de Sessão Estrito:</strong> Uso de <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">st.session_state</code> para reter as credenciais do usuário. O sistema interrompe a execução com <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">st.stop()</code> caso o usuário não esteja devidamente logado.
-                </li>
-                <li>
-                  <strong className="text-slate-800">Renderização Dinâmica Baseada em Perfil:</strong> Filtra dinamicamente as perguntas do checklist buscando na tabela <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">Matriz_Checklist</code> correspondente apenas ao <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono">SetorID</code> do usuário ativo.
-                </li>
-                <li>
-                  <strong className="text-slate-800">Segurança de Validação na Interface:</strong> O formulário implementa verificação em loop antes de gravar no banco de dados. Caso algum item seja marcado como "REPROVADO", a interface valida se a justificativa foi escrita pelo usuário, bloqueando a gravação caso contrário.
-                </li>
-              </ul>
-            </div>
-          </div>
-        )}
+                {/* 4. SUBMENU DEV (CONTROLE DE SLA SIMULADO + ENTREGÁVEIS TÉCNICOS) */}
+                {configSubTab === 'dev' && (
+                  <div className="space-y-6 animate-fade-in">
+                    {/* Parâmetro de Sistema - Ativação/Desativação de SLA */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-xs space-y-4">
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div className="space-y-1">
+                          <h4 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2">
+                            <Clock className="w-4.5 h-4.5 text-indigo-600 animate-pulse" />
+                            Parâmetro de Sistema: Tempo Simulado (SLA)
+                          </h4>
+                          <p className="text-xs text-slate-500">
+                            Configure se o sistema utilizará um relógio de simulação acelerada (Time Travel) para testes de conformidade ou o relógio real do sistema.
+                          </p>
+                        </div>
+                        
+                        <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1.5 shadow-3xs shrink-0 select-none">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsTimeTravelEnabled(true);
+                              localStorage.setItem('pop_is_time_travel_enabled', 'true');
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              isTimeTravelEnabled
+                                ? 'bg-indigo-600 text-white shadow-3xs'
+                                : 'text-slate-500 hover:text-slate-850 hover:bg-slate-50'
+                            }`}
+                          >
+                            Ativo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsTimeTravelEnabled(false);
+                              localStorage.setItem('pop_is_time_travel_enabled', 'false');
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              !isTimeTravelEnabled
+                                ? 'bg-rose-600 text-white shadow-3xs'
+                                : 'text-slate-500 hover:text-slate-850 hover:bg-slate-50'
+                            }`}
+                          >
+                            Desativado
+                          </button>
+                        </div>
+                      </div>
 
-        {activeTab === 'sla' && (
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/50">
-              <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-indigo-600" />
-                  Monitoramento e Alertas de SLA (Python)
-                </h3>
-                <p className="text-xs text-slate-500">Melhor abordagem corporativa para executar rotinas em background e detectar estouros de prazos de 48h.</p>
-              </div>
-              <button
-                onClick={() => copyToClipboard(slaMonitorPython, 'sla')}
-                className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-2 cursor-pointer shadow-3xs transition-all"
-              >
-                {copiedKey === 'sla' ? (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-500" />
-                    Copiado!
-                  </>
-                ) : (
-                  <>
-                    <Clipboard className="w-4 h-4 text-slate-500" />
-                    Copiar Código Python
-                  </>
+                      {isTimeTravelEnabled ? (
+                        <div className="pt-4 border-t border-slate-150 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-indigo-50/20 p-4 rounded-xl">
+                          <div>
+                            <h5 className="text-xs font-display font-bold text-indigo-950 flex items-center gap-1.5">
+                              <Sliders className="w-4 h-4 text-indigo-600" />
+                              Console de Aceleração do Tempo (SLA)
+                            </h5>
+                            <p className="text-[11px] text-indigo-700/85 mt-1 leading-relaxed font-sans">
+                              Avance o tempo simulado da plataforma para testar o estouro de prazos do SLA corporativo de 48 horas de faturamento de contratos.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap shrink-0">
+                            <button
+                              onClick={() => handleTimeTravel(6)}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+                            >
+                              +6 Horas
+                            </button>
+                            <button
+                              onClick={() => handleTimeTravel(24)}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+                            >
+                              +24 Horas
+                            </button>
+                            <button
+                              onClick={() => handleTimeTravel(48)}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs cursor-pointer"
+                            >
+                              +48 Horas (Estourar SLA)
+                            </button>
+                            <button
+                              onClick={resetSimulator}
+                              className="bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-[11px] font-bold py-1.5 px-3 rounded-lg transition-colors shadow-3xs flex items-center gap-1.5 cursor-pointer"
+                              title="Reinicia todo o simulador, usuários e checklists salvos"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              Resetar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pt-3 border-t border-slate-150 text-[11px] text-emerald-750 font-medium flex items-center gap-2 bg-emerald-50/50 p-3 rounded-xl border border-emerald-100/50">
+                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>O sistema está rodando utilizando o <strong>tempo real de seu dispositivo</strong>. Todas as GRDs cadastradas obedecerão à hora atual exata.</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Abas Internas dos Entregáveis do Desenvolvedor */}
+                    <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+                      <div className="flex border-b border-slate-200 bg-slate-50/80 px-4 pt-3 gap-1 overflow-x-auto scrollbar-none">
+                        <button
+                          onClick={() => setDevDeliverableTab('ddl')}
+                          className={`py-2.5 px-4 text-xs font-display font-bold border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+                            devDeliverableTab === 'ddl'
+                              ? 'border-indigo-600 text-indigo-600 bg-white rounded-t-lg'
+                              : 'border-transparent text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          <Database className="w-3.5 h-3.5" />
+                          1. Scripts DDL (SQL Server)
+                        </button>
+                        <button
+                          onClick={() => setDevDeliverableTab('streamlit')}
+                          className={`py-2.5 px-4 text-xs font-display font-bold border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+                            devDeliverableTab === 'streamlit'
+                              ? 'border-indigo-600 text-indigo-600 bg-white rounded-t-lg'
+                              : 'border-transparent text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          2. Estrutura Streamlit (Python)
+                        </button>
+                        <button
+                          onClick={() => setDevDeliverableTab('sla_py')}
+                          className={`py-2.5 px-4 text-xs font-display font-bold border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+                            devDeliverableTab === 'sla_py'
+                              ? 'border-indigo-600 text-indigo-600 bg-white rounded-t-lg'
+                              : 'border-transparent text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                          3. Monitoramento SLA (Python)
+                        </button>
+                      </div>
+
+                      {/* CONTEÚDO DAS ABAS INTERNAS DEV */}
+                      {devDeliverableTab === 'ddl' && (
+                        <div className="animate-fade-in">
+                          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/20">
+                            <div>
+                              <h4 className="text-xs font-display font-bold text-slate-900 flex items-center gap-1.5">
+                                <Database className="w-4 h-4 text-indigo-600" />
+                                Modelo Relacional - DDL Microsoft SQL Server
+                              </h4>
+                              <p className="text-[11px] text-slate-500">Scripts prontos para produção com índices, PKs, FKs e restrição de justificativa de reprovações.</p>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(sqlServerDDL, 'ddl')}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-1.5 px-3 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-3xs transition-all shrink-0 animate-fade-in"
+                            >
+                              {copiedKey === 'ddl' ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  Copiado!
+                                </>
+                              ) : (
+                                <>
+                                  <Clipboard className="w-3.5 h-3.5 text-slate-500" />
+                                  Copiar Script DDL
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          
+                          <div className="p-5 bg-slate-950 overflow-x-auto">
+                            <pre className="text-[11px] font-mono text-slate-200 leading-relaxed max-h-[400px]">
+                              {sqlServerDDL}
+                            </pre>
+                          </div>
+
+                          <div className="p-5 border-t border-slate-100 bg-slate-50/20">
+                            <h5 className="text-[11px] font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Destaques da Arquitetura do Banco de Dados:</h5>
+                            <ul className="text-xs text-slate-600 space-y-1.5 list-disc list-inside font-sans">
+                              <li>
+                                <strong className="text-slate-800">Garantia Relacional do POP:</strong> Utilização de <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">CONSTRAINT CHECK</code> para impedir de maneira estrita a gravação de itens como "REPROVADO" sem que haja uma justificativa textual de pelo menos 10 caracteres.
+                              </li>
+                              <li>
+                                <strong className="text-slate-800">Otimização de Índices:</strong> Criação de índices não clusterizados na coluna <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">SlaLimite</code> e <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">GRDID</code> para acelerar os robôs e jobs automáticos de varredura de SLA de 48 horas.
+                              </li>
+                            </ul>
+                          </div>
+                        </div>
+                      )}
+
+                      {devDeliverableTab === 'streamlit' && (
+                        <div className="animate-fade-in">
+                          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/20">
+                            <div>
+                              <h4 className="text-xs font-display font-bold text-slate-900 flex items-center gap-1.5">
+                                <FileText className="w-4 h-4 text-indigo-600" />
+                                Estrutura Streamlit Front-end (Python)
+                              </h4>
+                              <p className="text-[11px] text-slate-500">Estrutura em Python utilizando o Streamlit para controle de sessão, filtragem dinâmica do banco e validação do POP.</p>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(streamlitAppPython, 'streamlit')}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-1.5 px-3 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-3xs transition-all shrink-0 animate-fade-in"
+                            >
+                              {copiedKey === 'streamlit' ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  Copiado!
+                                </>
+                              ) : (
+                                <>
+                                  <Clipboard className="w-3.5 h-3.5 text-slate-500" />
+                                  Copiar Código Python
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          
+                          <div className="p-5 bg-slate-950 overflow-x-auto">
+                            <pre className="text-[11px] font-mono text-slate-200 leading-relaxed max-h-[400px]">
+                              {streamlitAppPython}
+                            </pre>
+                          </div>
+
+                          <div className="p-5 border-t border-slate-100 bg-slate-50/20">
+                            <h5 className="text-[11px] font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Explicação da Lógica de Front-end no Streamlit:</h5>
+                            <ul className="text-xs text-slate-600 space-y-1.5 list-disc list-inside font-sans">
+                              <li>
+                                <strong className="text-slate-800">Controle de Sessão Estrito:</strong> Uso de <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">st.session_state</code> para reter as credenciais do usuário. O sistema interrompe a execução com <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">st.stop()</code> caso o usuário não esteja devidamente logado.
+                              </li>
+                              <li>
+                                <strong className="text-slate-800">Renderização Dinâmica Baseada em Perfil:</strong> Filtra dinamicamente as perguntas do checklist buscando na tabela <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">Matriz_Checklist</code> correspondente apenas ao <code className="bg-slate-200/60 px-1 py-0.5 rounded text-slate-900 font-mono text-[10px]">SetorID</code> do usuário ativo.
+                              </li>
+                              <li>
+                                <strong className="text-slate-800">Segurança de Validação na Interface:</strong> O formulário implementa verificação em loop antes de gravar no banco de dados. Caso algum item seja marcado como "REPROVADO", a interface valida se a justificativa foi escrita pelo usuário, bloqueando a gravação caso contrário.
+                              </li>
+                            </ul>
+                          </div>
+                        </div>
+                      )}
+
+                      {devDeliverableTab === 'sla_py' && (
+                        <div className="animate-fade-in">
+                          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50/20">
+                            <div>
+                              <h4 className="text-xs font-display font-bold text-slate-900 flex items-center gap-1.5">
+                                <Clock className="w-4 h-4 text-indigo-600" />
+                                Monitoramento e Alertas de SLA (Python)
+                              </h4>
+                              <p className="text-[11px] text-slate-500">Melhor abordagem corporativa para executar rotinas em background e detectar estouros de prazos de 48h.</p>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(slaMonitorPython, 'sla_py')}
+                              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold py-1.5 px-3 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-3xs transition-all shrink-0 animate-fade-in"
+                            >
+                              {copiedKey === 'sla_py' ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  Copiado!
+                                </>
+                              ) : (
+                                <>
+                                  <Clipboard className="w-3.5 h-3.5 text-slate-500" />
+                                  Copiar Código Python
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          
+                          <div className="p-5 bg-slate-950 overflow-x-auto">
+                            <pre className="text-[11px] font-mono text-slate-200 leading-relaxed max-h-[400px]">
+                              {slaMonitorPython}
+                            </pre>
+                          </div>
+
+                          <div className="p-5 border-t border-slate-100 bg-slate-50/20">
+                            <h5 className="text-[11px] font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Estrutura Operacional de Monitoria de SLA:</h5>
+                            <p className="text-xs text-slate-600 leading-relaxed mb-4 font-sans">
+                              Em ambientes enterprise regulados por POP, a melhor prática não é realizar os cálculos de SLA em tempo de leitura de página pelo usuário (o que prejudicaria a performance de carga do Streamlit), mas sim implementar um <strong className="text-slate-800 font-sans">Job Assíncrono Desacoplado</strong>.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-3xs">
+                                <h6 className="text-[11px] font-display font-bold text-slate-800 mb-2 flex items-center gap-1.5">
+                                  <TrendingUp className="w-4 h-4 text-indigo-600" />
+                                  1. Varredura Otimizada no SGBD
+                                </h6>
+                                <p className="text-[10px] text-slate-500 leading-relaxed font-sans font-medium">
+                                  O script executa uma query de alta velocidade filtrando registros de GRD ainda não concluídas (<code className="bg-slate-150 px-1 py-0.5 rounded text-slate-900 font-mono text-[9px]">EM_ANDAMENTO</code>) onde o timestamp limite do SLA já é inferior a data atual (<code className="bg-slate-150 px-1 py-0.5 rounded text-slate-900 font-mono text-[9px]">SlaLimite &lt; GETDATE()</code>).
+                                </p>
+                              </div>
+                              
+                              <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-3xs">
+                                <h6 className="text-[11px] font-display font-bold text-slate-800 mb-2 flex items-center gap-1.5">
+                                  <ShieldAlert className="w-4 h-4 text-rose-600" />
+                                  2. Alertas por Escalonamento Automático
+                                </h6>
+                                <p className="text-[10px] text-slate-500 leading-relaxed font-sans font-medium">
+                                  Identifica quais áreas especialistas não cumpriram sua etapa de auditoria e envia e-mail com escalonamento aos diretores e auditores, expondo as áreas omissas de maneira automatizada e auditada.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
-              </button>
-            </div>
-            
-            <div className="p-5 bg-slate-950 overflow-x-auto">
-              <pre className="text-xs font-mono text-slate-200 leading-relaxed max-h-[500px]">
-                {slaMonitorPython}
-              </pre>
-            </div>
 
-            <div className="p-5 border-t border-slate-100 bg-slate-50/50">
-              <h4 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider mb-2">Estrutura Operacional de Monitoria de SLA:</h4>
-              <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                Em ambientes enterprise regulados por POP, a melhor prática não é realizar os cálculos de SLA em tempo de leitura de página pelo usuário (o que prejudicaria a performance de carga do Streamlit), mas sim implementar um <strong className="text-slate-800">Job Assíncrono Desacoplado</strong>.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-3xs">
-                  <h5 className="text-xs font-display font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                    <TrendingUp className="w-4 h-4 text-indigo-600" />
-                    1. Varredura Otimizada no SGBD
-                  </h5>
-                  <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
-                    O script executa uma query de alta velocidade filtrando registros de GRD ainda não concluídas (<code className="bg-slate-150 px-1 py-0.5 rounded text-slate-900 font-mono">EM_ANDAMENTO</code>) onde o timestamp limite do SLA já é inferior a data atual (<code className="bg-slate-150 px-1 py-0.5 rounded text-slate-900 font-mono">SlaLimite &lt; GETDATE()</code>).
-                  </p>
-                </div>
-                
-                <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-3xs">
-                  <h5 className="text-xs font-display font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4 text-rose-600" />
-                    2. Alertas por Escalonamento Automático
-                  </h5>
-                  <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
-                    Identifica quais áreas especialistas não cumpriram sua etapa de auditoria e envia e-mail com escalonamento aos diretores e auditores, expondo as áreas omissas de maneira automatizada e auditada.
-                  </p>
-                </div>
               </div>
             </div>
           </div>

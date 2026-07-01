@@ -31,7 +31,16 @@ import {
   ShieldCheck,
   Code,
   Building2,
-  CheckSquare
+  CheckSquare,
+  Plus,
+  Upload,
+  Paperclip,
+  X,
+  Printer,
+  Mail,
+  Sparkles,
+  Send,
+  Copy
 } from 'lucide-react';
 import { sqlServerDDL, streamlitAppPython, slaMonitorPython } from './data/deliverables';
 import LoginScreen, { UsuarioSimulado, UserType } from './components/LoginScreen';
@@ -165,6 +174,7 @@ interface RespostaChecklist {
   justificativa?: string;
   avaliadoPor?: string;
   avaliadoEm?: Date;
+  anexos?: { nome: string; tamanho: string }[];
 }
 
 // Massa inicial de demonstração
@@ -231,7 +241,21 @@ export default function App() {
   const [respostas, setRespostas] = useState<RespostaChecklist[]>([]);
   const [simulatedTimeHoursOffset, setSimulatedTimeHoursOffset] = useState<number>(0);
   const [searchText, setSearchText] = useState<string>('');
-  const [grdFilter, setGrdFilter] = useState<'TODAS' | 'AGUARDANDO' | 'CONCLUIDAS'>('TODAS');
+  const [grdFilter, setGrdFilter] = useState<'TODAS' | 'CONCLUIDAS' | 'EM_ANDAMENTO' | 'MINHA_APROVACAO'>('TODAS');
+  const [isCreatingGrd, setIsCreatingGrd] = useState<boolean>(false);
+  const [selectedGrdForDetail, setSelectedGrdForDetail] = useState<GRD | null>(null);
+  const [viewingTermoGrd, setViewingTermoGrd] = useState<GRD | null>(null);
+  const [grdForCobranca, setGrdForCobranca] = useState<GRD | null>(null);
+  const [cobrancaEmailDraft, setCobrancaEmailDraft] = useState<string>('');
+  const [isCopied, setIsCopied] = useState<boolean>(false);
+  const [isObservacaoObrigatoria, setIsObservacaoObrigatoria] = useState<boolean>(() => {
+    const cached = localStorage.getItem('pop_is_obs_required');
+    return cached === null ? true : cached === 'true';
+  });
+  const [isAnexoObrigatorio, setIsAnexoObrigatorio] = useState<boolean>(() => {
+    const cached = localStorage.getItem('pop_is_anexo_required');
+    return cached === null ? false : cached === 'true';
+  });
 
   // Estados Dinâmicos de Matriz, Usuários & Departamentos
   const [checklistMatriz, setChecklistMatriz] = useState<ChecklistItem[]>([]);
@@ -274,7 +298,7 @@ export default function App() {
 
   // Seleção de GRD para preenchimento por outro setor
   const [selectedGrdId, setSelectedGrdId] = useState<number>(101);
-  const [checklistEvaluations, setChecklistEvaluations] = useState<Record<number, { status: 'PENDENTE' | 'APROVADO' | 'REPROVADO', justificativa: string }>>({});
+  const [checklistEvaluations, setChecklistEvaluations] = useState<Record<number, { status: 'PENDENTE' | 'APROVADO' | 'REPROVADO', justificativa: string, anexos?: { nome: string, tamanho: string }[] }>>({});
   const [validationError, setValidationError] = useState<string | null>(null);
   const [evaluationSuccess, setEvaluationSuccess] = useState<string | null>(null);
 
@@ -691,6 +715,7 @@ export default function App() {
     setValidationError(null);
     setFormSuccessMessage(`GRD #${newGrdId} emitida com sucesso! Checklists dinâmicos instanciados para os 5 departamentos.`);
     setSelectedGrdId(newGrdId);
+    setIsCreatingGrd(false);
 
     setTimeout(() => {
       setFormSuccessMessage(null);
@@ -700,13 +725,14 @@ export default function App() {
   // Inicializa o formulário de avaliação do departamento com o estado atual do banco simulado
   useEffect(() => {
     const itemsDoSetor = checklistMatriz.filter(item => item.role === userRole);
-    const novasAvaliacoes: Record<number, { status: 'PENDENTE' | 'APROVADO' | 'REPROVADO', justificativa: string }> = {};
+    const novasAvaliacoes: Record<number, { status: 'PENDENTE' | 'APROVADO' | 'REPROVADO', justificativa: string, anexos?: { nome: string, tamanho: string }[] }> = {};
     
     itemsDoSetor.forEach(item => {
       const respExistente = respostas.find(r => r.grdId === selectedGrdId && r.itemId === item.id);
       novasAvaliacoes[item.id] = {
         status: respExistente ? respExistente.status : 'PENDENTE',
-        justificativa: respExistente?.justificativa || ''
+        justificativa: respExistente?.justificativa || '',
+        anexos: respExistente?.anexos || []
       };
     });
     
@@ -716,14 +742,49 @@ export default function App() {
   }, [selectedGrdId, userRole, respostas, checklistMatriz]);
 
   // Função para lidar com alteração individual de item do checklist
-  const handleChecklistItemChange = (itemId: number, field: 'status' | 'justificativa', value: any) => {
+  const handleChecklistItemChange = (itemId: number, field: 'status' | 'justificativa' | 'anexos', value: any) => {
     setChecklistEvaluations(prev => {
-      const current = prev[itemId] || { status: 'PENDENTE', justificativa: '' };
+      const current = prev[itemId] || { status: 'PENDENTE', justificativa: '', anexos: [] };
       return {
         ...prev,
         [itemId]: {
           ...current,
           [field]: value
+        }
+      };
+    });
+  };
+
+  const handleAttachFiles = (itemId: number, files: File[]) => {
+    setChecklistEvaluations(prev => {
+      const current = prev[itemId] || { status: 'PENDENTE', justificativa: '', anexos: [] };
+      const currentAnexos = current.anexos || [];
+      const newAnexos = files.map(f => ({
+        nome: f.name,
+        tamanho: f.size > 1024 * 1024 
+          ? `${(f.size / (1024 * 1024)).toFixed(1)} MB` 
+          : `${(f.size / 1024).toFixed(0)} KB`
+      }));
+      return {
+        ...prev,
+        [itemId]: {
+          ...current,
+          anexos: [...currentAnexos, ...newAnexos]
+        }
+      };
+    });
+  };
+
+  const handleRemoveAttachment = (itemId: number, indexToRemove: number) => {
+    setChecklistEvaluations(prev => {
+      const current = prev[itemId] || { status: 'PENDENTE', justificativa: '', anexos: [] };
+      const currentAnexos = current.anexos || [];
+      const updatedAnexos = currentAnexos.filter((_, idx) => idx !== indexToRemove);
+      return {
+        ...prev,
+        [itemId]: {
+          ...current,
+          anexos: updatedAnexos
         }
       };
     });
@@ -743,11 +804,21 @@ export default function App() {
     // 2. Justificativa deve conter justificações ricas (mínimo 10 caracteres)
     for (const item of itemsDoSetor) {
       const evalItem = checklistEvaluations[item.id];
-      if (evalItem && evalItem.status === 'REPROVADO') {
-        if (!evalItem.justificativa || evalItem.justificativa.trim().length < 10) {
-          setValidationError(`Erro do POP: É obrigatório registrar uma justificativa técnica e pendência clara (mínimo 10 caracteres) para itens REPROVADOS. Verifique o item ID #${item.id}.`);
-          hasError = true;
-          break;
+      if (evalItem) {
+        if (evalItem.status === 'REPROVADO' && isObservacaoObrigatoria) {
+          if (!evalItem.justificativa || evalItem.justificativa.trim().length < 10) {
+            setValidationError(`Erro do POP: É obrigatório registrar uma justificativa técnica (mínimo 10 caracteres) para itens REPROVADOS. Verifique o item ID #${item.id}.`);
+            hasError = true;
+            break;
+          }
+        }
+        
+        if (isAnexoObrigatorio && evalItem.status !== 'PENDENTE') {
+          if (!evalItem.anexos || evalItem.anexos.length === 0) {
+            setValidationError(`Erro de Parametrização: É obrigatório anexar pelo menos um arquivo de evidência documental para validar o item ID #${item.id}.`);
+            hasError = true;
+            break;
+          }
         }
       }
     }
@@ -763,26 +834,23 @@ export default function App() {
     // Reconstrói as respostas para TODOS os itens ativos na matriz para este setor
     const sectorNewResp: RespostaChecklist[] = itemsDoSetor.map(item => {
       const existing = respostas.find(r => r.grdId === selectedGrdId && r.itemId === item.id);
-      const evalItem = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '' };
+      const evalItem = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '', anexos: [] };
       
       return {
         grdId: selectedGrdId,
         itemId: item.id,
         role: item.role,
         status: evalItem.status,
-        justificativa: evalItem.status === 'REPROVADO' ? evalItem.justificativa : undefined,
+        justificativa: evalItem.justificativa || undefined,
         avaliadoPor: evalItem.status !== 'PENDENTE' ? `${currentUser.nome} (${setoresConfig[userRole]?.nome || userRole})` : existing?.avaliadoPor,
-        avaliadoEm: evalItem.status !== 'PENDENTE' ? (existing?.avaliadoEm || simTime) : existing?.avaliadoEm
+        avaliadoEm: evalItem.status !== 'PENDENTE' ? (existing?.avaliadoEm || simTime) : existing?.avaliadoEm,
+        anexos: evalItem.anexos || []
       };
     });
 
     const updatedResp = [...otherResp, ...sectorNewResp];
 
-    // Atualizar o cabeçalho da GRD com base na consolidação das respostas
-    // Regra:
-    // - Se há qualquer item REPROVADO no geral das respostas da GRD, o cabeçalho se torna 'REPROVADO'
-    // - Se TODOS os itens do checklist (para todas as áreas de checklist envolvidas) estão APROVADOS, o cabeçalho se torna 'APROVADO'
-    // - Caso contrário, se há itens pendentes, continua 'EM_ANDAMENTO' (ou SLA_EXPIRADO se o tempo esgotou)
+    // @ts-ignore
     const todasRespostasGrd = updatedResp.filter(r => r.grdId === selectedGrdId);
     const temReprovado = todasRespostasGrd.some(r => r.status === 'REPROVADO');
     const todosAprovados = todasRespostasGrd.every(r => r.status === 'APROVADO');
@@ -819,9 +887,47 @@ export default function App() {
     saveSimulatorState(updatedGrds, updatedResp, simulatedTimeHoursOffset, checklistMatriz, usuarios, selectedUserId, setoresConfig);
 
     setEvaluationSuccess(`Sucesso! Avaliações do setor ${setoresConfig[userRole].nome} gravadas na GRD #${selectedGrdId} com total auditoria.`);
+    setSelectedGrdForDetail(null); // Close detail modal
     
     // Rola de volta para o topo da página do simulador para ver os feedbacks
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const generateCobrançaEmail = (grd: GRD) => {
+    const checklistGrd = respostas.filter(r => r.grdId === grd.id);
+    const pendingAnswers = checklistGrd.filter(r => r.status !== 'APROVADO');
+    
+    // Obter descrição dos itens pendentes
+    const pendingItemsLines = pendingAnswers.map(r => {
+      const item = checklistMatriz.find(m => m.id === r.itemId);
+      return `- [${r.role}] ${item?.descricao || 'Verificação pendente'}`;
+    }).join('\n');
+
+    const valorUltimaMedicao = "R$ 25.000,00";
+    const obraInfo = "199 - RUMO";
+    
+    return `Assunto: Bloqueio de Medição Final - Contrato nº ${grd.numeroContrato} - Obra: ${obraInfo}
+
+Prezados,
+
+Informamos que a última medição do contrato nº ${grd.numeroContrato}, referente à obra ${obraInfo}, no valor de ${valorUltimaMedicao}, encontra-se atualmente bloqueada em nosso sistema.
+
+A liberação deste pagamento está condicionada à regularização das pendências na documentação de encerramento. Identificamos que o seguinte item ainda não foi entregue/regularizado:
+
+${pendingItemsLines || '- Pendências gerais de documentação regulamentar.'}
+
+Solicitamos que providenciem a documentação mencionada com brevidade. Assim que os documentos forem validados, seguiremos com a liberação do pagamento e a emissão do Termo de Encerramento Contratual.
+
+Atenciosamente,
+${currentUser.nome}
+Operador de Medições`;
+  };
+
+  const handleTriggerCobranca = (grd: GRD) => {
+    const emailText = generateCobrançaEmail(grd);
+    setCobrancaEmailDraft(emailText);
+    setGrdForCobranca(grd);
+    setIsCopied(false);
   };
 
   // Funções Auxiliares de Estatísticas e Tempos para a UI
@@ -919,19 +1025,168 @@ export default function App() {
     return <LoginScreen usuarios={usuarios} onLogin={handleLogin} />;
   }
 
+  if (viewingTermoGrd) {
+    const formattedDate = getSimulatedTime().toLocaleDateString('pt-BR');
+    
+    return (
+      <div className="min-h-screen bg-slate-100 p-4 sm:p-8 font-sans print:bg-white print:p-0 animate-fade-in">
+        {/* Barra de Ações Superior */}
+        <div className="max-w-[800px] mx-auto flex justify-between items-center mb-6 print:hidden">
+          <button
+            onClick={() => setViewingTermoGrd(null)}
+            className="flex items-center gap-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold py-2.5 px-4 rounded-xl shadow-3xs transition-all cursor-pointer"
+          >
+            <ArrowRight className="w-4 h-4 rotate-180" />
+            Voltar ao Checklist
+          </button>
+          
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-3xs transition-all cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            Imprimir Documento
+          </button>
+        </div>
+
+        {/* Folha A4 do Termo */}
+        <div id="termo-de-nada-consta" className="bg-white shadow-lg border border-slate-200 rounded-2xl max-w-[800px] mx-auto p-8 sm:p-12 print:shadow-none print:border-none print:p-0">
+          <div className="text-center mb-8 space-y-1">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-wide font-serif">TERMO DE NADA CONSTA</h2>
+            <p className="text-sm font-semibold text-slate-700">Liberação da Última Medição / Encerramento Contratual</p>
+            <div className="w-full border-b border-slate-300 pt-2" />
+          </div>
+
+          {/* 1. IDENTIFICAÇÃO */}
+          <div className="mb-6">
+            <h3 className="bg-slate-50 border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-900 uppercase">
+              1. Identificação do Contrato e das Partes
+            </h3>
+            <table className="w-full border-collapse border border-slate-300 text-xs mt-2">
+              <tbody>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold w-1/3 bg-slate-50/50">Contratante:</td>
+                  <td className="p-2">Sua Empresa | CNPJ: 00.000.000/0001-00</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Contratada (Fornecedor):</td>
+                  <td className="p-2">{viewingTermoGrd.nomeFornecedor}</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Número do Contrato:</td>
+                  <td className="p-2">{viewingTermoGrd.numeroContrato}</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Obra / Empreendimento:</td>
+                  <td className="p-2">199 - RUMO</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Engenheiro Responsável:</td>
+                  <td className="p-2">João Silva</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Valor Total do Contrato:</td>
+                  <td className="p-2">R$ 150.000,00</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Valor da Última Medição:</td>
+                  <td className="p-2">R$ 25.000,00</td>
+                </tr>
+                <tr>
+                  <td className="border-r border-slate-300 p-2 font-bold bg-slate-50/50">Data de Emissão:</td>
+                  <td className="p-2">{formattedDate}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* 2. DECLARAÇÃO DE REGULARIDADE */}
+          <div className="mb-6 space-y-3">
+            <h3 className="bg-slate-50 border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-900 uppercase">
+              2. Declaração de Regularidade
+            </h3>
+            <p className="text-xs text-slate-800 leading-relaxed text-justify">
+              Pelo presente termo, os setores competentes da CONTRATANTE atestam, após verificação das planilhas de conferência sistêmica ("Matriz Dinâmica de Encerramento"), que a CONTRATADA cumpriu integralmente com as obrigações previstas no Contrato nº {viewingTermoGrd.numeroContrato}, não restando pendências impeditivas para a liberação do pagamento da última medição.
+            </p>
+            <ul className="list-disc pl-5 text-xs text-slate-750 space-y-1.5">
+              <li>Todas as obrigações trabalhistas e previdenciárias referentes à mão de obra utilizada foram comprovadas;</li>
+              <li>A regularidade fiscal e financeira encontra-se devidamente atestada (CNDs válidas e NFs conferidas);</li>
+              <li>Os serviços de engenharia foram executados conforme especificações, projetos (As Built) e manuais entregues;</li>
+              <li>As condicionantes de Qualidade, Saúde, Segurança e Meio Ambiente (QSSMA) foram rigorosamente cumpridas, inexistindo passivo ambiental.</li>
+            </ul>
+          </div>
+
+          {/* 3. PARECER FINAL DOS SETORES */}
+          <div className="mb-8">
+            <h3 className="bg-slate-50 border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-900 uppercase">
+              3. Parecer Final dos Setores
+            </h3>
+            <table className="w-full border-collapse border border-slate-300 text-xs mt-2">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-300">
+                  <th className="border-r border-slate-300 p-2 text-left w-1/3">Área</th>
+                  <th className="border-r border-slate-300 p-2 text-left w-1/3">Status no Sistema</th>
+                  <th className="p-2 text-left w-1/3">Assinatura / Visto</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold">Engenharia / Técnica</td>
+                  <td className="border-r border-slate-300 p-2 text-emerald-700 font-bold">CONCLUÍDO (SISTEMA)</td>
+                  <td className="p-2 text-slate-400 font-mono">_______________________</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold">Trabalhista / RH</td>
+                  <td className="border-r border-slate-300 p-2 text-emerald-700 font-bold">CONCLUÍDO (SISTEMA)</td>
+                  <td className="p-2 text-slate-400 font-mono">_______________________</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold">QSSMA</td>
+                  <td className="border-r border-slate-300 p-2 text-emerald-700 font-bold">CONCLUÍDO (SISTEMA)</td>
+                  <td className="p-2 text-slate-400 font-mono">_______________________</td>
+                </tr>
+                <tr className="border-b border-slate-300">
+                  <td className="border-r border-slate-300 p-2 font-bold">Fiscal / Financeiro</td>
+                  <td className="border-r border-slate-300 p-2 text-emerald-700 font-bold">CONCLUÍDO (SISTEMA)</td>
+                  <td className="p-2 text-slate-400 font-mono">_______________________</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Rodapé e Assinaturas */}
+          <div className="space-y-12">
+            <p className="text-center text-xs text-slate-600">
+              As partes abaixo assinadas declaram estar cientes e de acordo com todas as informações contidas neste Termo.
+            </p>
+            <div className="grid grid-cols-2 gap-8 text-center text-xs">
+              <div className="space-y-1">
+                <p className="text-slate-400">__________________________________________</p>
+                <p className="font-bold text-slate-900">Representante Legal da CONTRATADA</p>
+                <p className="text-slate-500 uppercase">{viewingTermoGrd.nomeFornecedor}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-slate-400">__________________________________________</p>
+                <p className="font-bold text-slate-900">Gestor do Contrato / CONTRATANTE</p>
+                <p className="text-slate-500">Aprovação Final</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans leading-relaxed">
       {/* HEADER DA PLATAFORMA */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-6 py-4 shadow-xs">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div 
-            className="flex items-center gap-3 cursor-pointer select-none group"
+            className="flex items-center gap-2 cursor-pointer select-none group"
             onClick={() => setActiveTab('simulator')}
             title="Ir para o Simulador Principal"
           >
-            <div className="p-2.5 bg-indigo-600 group-hover:bg-indigo-700 rounded-xl text-white shadow-xs transition-colors">
-              <FileText className="w-5 h-5" />
-            </div>
             <div>
               <h1 className="text-xl font-display font-bold text-slate-900 group-hover:text-indigo-600 tracking-tight flex items-center gap-2 transition-colors">
                 Medição Final de Contratos 
@@ -947,20 +1202,12 @@ export default function App() {
 
           <div className="flex items-center flex-wrap gap-3">
             {/* Relógio de Simulação do SLA */}
-            {isTimeTravelEnabled ? (
+            {isTimeTravelEnabled && (
               <div className="flex items-center gap-2.5 bg-slate-50 border border-slate-150 rounded-lg px-3.5 py-1.5 shadow-3xs" title="Modo de SLA Simulado está ATIVO">
                 <Clock className="w-4 h-4 text-slate-500 animate-spin-slow" />
                 <div className="text-left">
                   <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Tempo Simulado (SLA)</p>
                   <p className="text-xs font-mono font-bold text-slate-900">{getSimulatedTimeFormatted()}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2.5 bg-emerald-50 border border-emerald-150 rounded-lg px-3.5 py-1.5 shadow-3xs" title="Modo de SLA Simulado está DESATIVADO. Usando relógio real.">
-                <Clock className="w-4 h-4 text-emerald-600" />
-                <div className="text-left">
-                  <p className="text-[9px] text-emerald-600 uppercase font-bold tracking-wider">Tempo Real</p>
-                  <p className="text-xs font-mono font-bold text-emerald-800">{getSimulatedTimeFormatted()}</p>
                 </div>
               </div>
             )}
@@ -1057,12 +1304,12 @@ export default function App() {
         {/* CONTEÚDO PRINCIPAL DO SIMULADOR OU CONFIGURAÇÕES */}
         {activeTab === 'simulator' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* LADO ESQUERDO: PAINEL DA ÁREA LOGADA */}
-            <div className="lg:col-span-5 space-y-6">
+            {/* CANTO ESQUERDO: FILTROS E INFORMAÇÕES DE ACESSO */}
+            <div className="lg:col-span-3 space-y-6">
               
-              {/* ALERTA DE ERRO / SUCESSO DO WORKFLOW */}
+              {/* Alertas de Feedback */}
               {validationError && (
-                <div className="bg-rose-50/60 border border-rose-100 text-rose-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs">
+                <div className="bg-rose-50/70 border border-rose-100 text-rose-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs animate-fade-in">
                   <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="font-display font-bold text-sm">Bloqueio de Conformidade</h4>
@@ -1072,7 +1319,7 @@ export default function App() {
               )}
 
               {evaluationSuccess && (
-                <div className="bg-emerald-50/60 border border-emerald-100 text-emerald-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs">
+                <div className="bg-emerald-50/60 border border-emerald-100 text-emerald-800 rounded-2xl p-4 flex items-start gap-3 shadow-3xs animate-fade-in">
                   <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="font-display font-bold text-sm">Operação Concluída</h4>
@@ -1082,7 +1329,7 @@ export default function App() {
               )}
 
               {formSuccessMessage && (
-                <div className="bg-indigo-50/60 border border-indigo-100 text-indigo-850 rounded-2xl p-4 flex items-start gap-3 shadow-3xs">
+                <div className="bg-indigo-50/60 border border-indigo-100 text-indigo-850 rounded-2xl p-4 flex items-start gap-3 shadow-3xs animate-fade-in">
                   <CheckCircle className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="font-display font-bold text-sm">GRD Criada</h4>
@@ -1092,214 +1339,105 @@ export default function App() {
               )}
 
               {/* CARD DETALHADO DO PERFIL DO SETOR ATIVO */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-3xs relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-24 h-24 bg-slate-50 rounded-full translate-x-8 -translate-y-8 pointer-events-none" />
-                <span className={`inline-block px-2.5 py-1 text-[10px] font-bold rounded-md mb-3 ${setoresConfig[userRole].badgeBg} ${setoresConfig[userRole].badgeText}`}>
-                  PERFIL ATIVO: {setoresConfig[userRole].role}
+              <div className="bg-white border border-slate-200 rounded-2xl p-4.5 shadow-3xs relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-20 h-20 bg-slate-50 rounded-full translate-x-6 -translate-y-6 pointer-events-none" />
+                <span className={`inline-block px-2.5 py-1 text-[10px] font-bold rounded-md mb-2.5 ${setoresConfig[userRole]?.badgeBg || 'bg-slate-100'} ${setoresConfig[userRole]?.badgeText || 'text-slate-800'}`}>
+                  PERFIL ATIVO: {userRole}
                 </span>
-                <h3 className="text-lg font-display font-bold text-slate-900">{setoresConfig[userRole].nome}</h3>
-                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  {setoresConfig[userRole].descricao}
+                <h3 className="text-sm font-display font-bold text-slate-900 leading-tight">
+                  {setoresConfig[userRole]?.nome || 'Perfil Admin'}
+                </h3>
+                <p className="text-[11px] text-slate-550 mt-1 leading-normal font-sans">
+                  {setoresConfig[userRole]?.descricao || 'Acesso completo para gerenciamento.'}
                 </p>
-                <div className="mt-4 pt-4 border-t border-slate-100">
-                  <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Mandato do POP</h4>
-                  <p className="text-xs text-slate-700 mt-1.5 italic">
-                    "{setoresConfig[userRole].responsabilidade}"
-                  </p>
-                </div>
               </div>
 
-              {/* CONTEÚDO DINÂMICO DE ACORDO COM O PERFIL SELECIONADO */}
-              {userRole === 'MEDICAO' ? (
-                /* FORMULÁRIO DE MEDIÇÃO: CRIAÇÃO DA GRD */
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-3xs">
-                  <div className="flex items-center gap-2 mb-4">
-                    <PlusCircle className="w-5 h-5 text-indigo-600" />
-                    <h3 className="text-sm font-display font-bold text-slate-900">Nova Guia de Remessa de Documentos (GRD)</h3>
-                  </div>
-                  
-                  <form onSubmit={handleCreateGrd} className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Código/Número do Contrato *
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex: CT-2026-0045"
-                        value={newContrato}
-                        onChange={(e) => setNewContrato(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none shadow-3xs transition-all"
-                        required
-                      />
-                    </div>
+              {/* CARD DOS FILTROS DA LISTA DE GRD */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-3xs space-y-3">
+                <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider mb-2 flex items-center gap-1.5">
+                  <ListFilter className="w-3.5 h-3.5 text-slate-400" />
+                  Filtros de Processo
+                </h4>
+                
+                <div className="flex flex-col gap-1.5 font-sans">
+                  <button
+                    onClick={() => setGrdFilter('TODAS')}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                      grdFilter === 'TODAS'
+                        ? 'bg-slate-950 text-white font-bold shadow-3xs'
+                        : 'bg-transparent text-slate-650 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <span>Todos</span>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${grdFilter === 'TODAS' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                      {grds.length}
+                    </span>
+                  </button>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Nome do Fornecedor / Parceiro Comercial *
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex: Alfa Prestadora de Serviços S/A"
-                        value={newFornecedor}
-                        onChange={(e) => setNewFornecedor(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none shadow-3xs transition-all"
-                        required
-                      />
-                    </div>
+                  <button
+                    onClick={() => setGrdFilter('EM_ANDAMENTO')}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                      grdFilter === 'EM_ANDAMENTO'
+                        ? 'bg-slate-950 text-white font-bold shadow-3xs'
+                        : 'bg-transparent text-slate-650 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                      Em andamento
+                    </span>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${grdFilter === 'EM_ANDAMENTO' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                      {grds.filter(g => g.status === 'EM_ANDAMENTO' || g.status === 'SLA_EXPIRADO').length}
+                    </span>
+                  </button>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Escopo Resumido (POP Anexo A)
-                      </label>
-                      <textarea
-                        rows={3}
-                        placeholder="Descreva resumidamente o objeto contratual e o escopo da medição final..."
-                        value={newEscopo}
-                        onChange={(e) => setNewEscopo(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none shadow-3xs resize-none transition-all"
-                      />
-                    </div>
+                  <button
+                    onClick={() => setGrdFilter('CONCLUIDAS')}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                      grdFilter === 'CONCLUIDAS'
+                        ? 'bg-slate-950 text-white font-bold shadow-3xs'
+                        : 'bg-transparent text-slate-650 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <span>Concluídos</span>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${grdFilter === 'CONCLUIDAS' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                      {grds.filter(g => g.status === 'APROVADO' || g.status === 'REPROVADO').length}
+                    </span>
+                  </button>
 
-                    <div className="bg-indigo-50/60 rounded-xl p-3.5 border border-indigo-100 flex items-start gap-2.5">
-                      <HelpCircle className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-indigo-900 leading-relaxed">
-                        <strong>Comportamento Automatizado do POP:</strong> Ao criar a GRD, o sistema criará o cabeçalho no banco de dados e instanciará automaticamente a matriz de 11 itens pendentes para auditoria paralela dos 5 departamentos. O SLA de 48 horas inicia de imediato.
-                      </p>
-                    </div>
-
-                    <button
-                      type="submit"
-                      className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <PlusCircle className="w-4 h-4" />
-                      Emitir GRD & Liberar Fluxo
-                    </button>
-                  </form>
+                  <button
+                    onClick={() => setGrdFilter('MINHA_APROVACAO')}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                      grdFilter === 'MINHA_APROVACAO'
+                        ? 'bg-slate-950 text-white font-bold shadow-3xs'
+                        : 'bg-transparent text-slate-650 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                      Minha Aprovação
+                    </span>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${grdFilter === 'MINHA_APROVACAO' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                      {grds.filter(g => (g.status === 'EM_ANDAMENTO' || g.status === 'SLA_EXPIRADO') && respostas.some(r => r.grdId === g.id && r.role === userRole && r.status === 'PENDENTE')).length}
+                    </span>
+                  </button>
                 </div>
-              ) : (
-                /* FORMULÁRIO DE OUTROS SETORES: PREENCHIMENTO DO CHECKLIST DO SETOR */
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-3xs">
-                  <div className="flex items-center justify-between gap-2 mb-4 border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <UserCheck className="w-5 h-5 text-slate-750" />
-                      <h3 className="text-sm font-display font-bold text-slate-900">Auditoria de Medição Final</h3>
-                    </div>
-                  </div>
 
-                  <div className="mb-4">
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Processo de GRD Ativo para Avaliação:
-                    </label>
-                    <select
-                      value={selectedGrdId}
-                      onChange={(e) => setSelectedGrdId(Number(e.target.value))}
-                      className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none shadow-3xs transition-all cursor-pointer"
-                    >
-                      {grds.map(g => (
-                        <option key={g.id} value={g.id}>
-                          GRD #{g.id} - {g.numeroContrato} [{g.nomeFornecedor.substring(0, 25)}...]
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <form onSubmit={handleSaveChecklist} className="space-y-6">
-                    {checklistMatriz.filter(item => item.role === userRole).map((item, idx) => {
-                      const aval = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '' };
-                      
-                      return (
-                        <div key={item.id} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 shadow-3xs relative">
-                          <div className="flex justify-between items-start gap-2">
-                            <span className="text-[10px] bg-slate-200 text-slate-800 font-bold px-2 py-0.5 rounded-md font-mono">
-                              Requisito #{item.id}
-                            </span>
-                            {aval.status === 'APROVADO' && (
-                              <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1 font-sans">
-                                <CheckCircle className="w-3.5 h-3.5" /> Conforme
-                              </span>
-                            )}
-                            {aval.status === 'REPROVADO' && (
-                              <span className="text-[10px] text-rose-700 font-semibold flex items-center gap-1 font-sans">
-                                <XCircle className="w-3.5 h-3.5" /> Pendência
-                              </span>
-                            )}
-                          </div>
-                          
-                          <p className="text-xs font-semibold text-slate-800">
-                            {item.descricao}
-                          </p>
-                          
-                          <p className="text-[10px] text-slate-500 italic bg-white p-2 rounded-lg border border-slate-100">
-                            💡 <strong>Tip POP:</strong> {item.instrucaoPop}
-                          </p>
-
-                          {/* Seletor Aprovado / Reprovado */}
-                          <div className="space-y-1">
-                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">Avaliação Técnica:</label>
-                            <div className="flex gap-4">
-                              <label className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name={`status-${item.id}`}
-                                  checked={aval.status === 'APROVADO'}
-                                  onChange={() => handleChecklistItemChange(item.id, 'status', 'APROVADO')}
-                                  className="text-indigo-650 focus:ring-indigo-500"
-                                />
-                                <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1">Aprovar Item</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name={`status-${item.id}`}
-                                  checked={aval.status === 'REPROVADO'}
-                                  onChange={() => handleChecklistItemChange(item.id, 'status', 'REPROVADO')}
-                                  className="text-indigo-650 focus:ring-indigo-500"
-                                />
-                                <span className="text-xs font-semibold text-rose-700 flex items-center gap-1">Reprovar Item</span>
-                              </label>
-                            </div>
-                          </div>
-
-                          {/* Justificativa / Observação */}
-                          <div className="space-y-1">
-                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                              Observações / Evidências: {aval.status === 'REPROVADO' && <span className="text-rose-600 font-extrabold">*</span>}
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={aval.justificativa}
-                              onChange={(e) => handleChecklistItemChange(item.id, 'justificativa', e.target.value)}
-                              placeholder={aval.status === 'REPROVADO' ? "ATENÇÃO: Descreva detalhadamente a desconformidade física encontrada (mínimo 10 caracteres)." : "Opcional. Registre detalhes da conferência caso necessário."}
-                              className={`w-full bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:outline-none transition-all ${
-                                aval.status === 'REPROVADO' && aval.justificativa.trim().length < 10 
-                                  ? 'border-rose-300 focus:ring-rose-500 focus:border-rose-500 bg-rose-50/20' 
-                                  : 'border-slate-200 focus:ring-indigo-500 focus:border-indigo-500'
-                              }`}
-                            />
-                            {aval.status === 'REPROVADO' && aval.justificativa.trim().length < 10 && (
-                              <p className="text-[10px] text-rose-600 font-semibold">
-                                * Justificativa obrigatória (Mínimo de 10 caracteres para travar no SQL Server).
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    <button
-                      type="submit"
-                      className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-md transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <CheckCircle className="w-4 h-4 text-emerald-400" />
-                      Salvar Validação Técnica & Enviar ao Banco
-                    </button>
-                  </form>
-                </div>
-              )}
+                {/* BOTÃO ADICIONAR CONTRATO/GRD PARA PERFIS DE MEDIÇÃO E CONTRATOS */}
+                {(userRole === 'MEDICAO' || userRole === 'CONTRATOS') && (
+                  <button
+                    onClick={() => setIsCreatingGrd(true)}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs shadow-xs transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer mt-4"
+                  >
+                    <Plus className="w-4 h-4 text-white" />
+                    Novo Contrato / GRD
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* LADO DIREITO: DASHBOARD CENTRAL DE GRDS & SLAs */}
-            <div className="lg:col-span-7 space-y-6">
+            <div className="lg:col-span-9 space-y-6">
               
               {/* COMPLEMENTO: CARD COM RESUMO RÁPIDO DO SLA GERAL */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1326,7 +1464,7 @@ export default function App() {
                 </div>
 
                 <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-3xs flex items-center gap-3">
-                  <div className="p-2.5 bg-red-50 rounded-xl text-red-700 border border-red-100 animate-pulse">
+                  <div className="p-2.5 bg-red-50 rounded-xl text-red-700 border border-red-100">
                     <AlertTriangle className="w-5 h-5" />
                   </div>
                   <div>
@@ -1349,52 +1487,17 @@ export default function App() {
                       <Calendar className="w-4 h-4 text-indigo-600" />
                       Fila de Acompanhamento de Processos
                     </h3>
-                    <p className="text-xs text-slate-500">Fluxo transacional completo e rastreamento de responsabilidade</p>
+                    <p className="text-xs text-slate-500 font-sans">Fluxo transacional completo e rastreamento de responsabilidade</p>
                   </div>
 
                   <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 w-full xl:w-auto">
-                    {/* Filtro por Abas de Status */}
-                    <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs gap-1">
-                      <button
-                        onClick={() => setGrdFilter('TODAS')}
-                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] ${
-                          grdFilter === 'TODAS'
-                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
-                            : 'text-slate-500 hover:text-slate-850'
-                        }`}
-                      >
-                        Todas ({grds.length})
-                      </button>
-                      <button
-                        onClick={() => setGrdFilter('AGUARDANDO')}
-                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] flex items-center gap-1.5 ${
-                          grdFilter === 'AGUARDANDO'
-                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
-                            : 'text-slate-500 hover:text-slate-850'
-                        }`}
-                      >
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                        Aguardando Aprovação ({grds.filter(g => g.status === 'EM_ANDAMENTO' || g.status === 'SLA_EXPIRADO').length})
-                      </button>
-                      <button
-                        onClick={() => setGrdFilter('CONCLUIDAS')}
-                        className={`px-3 py-1.5 rounded-lg font-bold transition-all duration-150 cursor-pointer text-[11px] ${
-                          grdFilter === 'CONCLUIDAS'
-                            ? 'bg-white text-slate-900 shadow-3xs border border-slate-200/50'
-                            : 'text-slate-500 hover:text-slate-850'
-                        }`}
-                      >
-                        Concluídas ({grds.filter(g => g.status === 'APROVADO' || g.status === 'REPROVADO').length})
-                      </button>
-                    </div>
-
-                    <div className="relative min-w-[200px]">
+                    <div className="relative min-w-[240px]">
                       <input
                         type="text"
                         placeholder="Buscar Contrato / Fornecedor..."
                         value={searchText}
                         onChange={(e) => setSearchText(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-all"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none transition-all font-sans"
                       />
                       <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
                     </div>
@@ -1404,22 +1507,32 @@ export default function App() {
                 <div className="divide-y divide-slate-100">
                   {filteredGrds.length === 0 ? (
                     <div className="p-8 text-center">
-                      <p className="text-xs text-slate-500">Nenhum processo de GRD encontrado para a busca.</p>
+                      <p className="text-xs text-slate-500 font-sans">Nenhum processo de GRD encontrado para a busca.</p>
                     </div>
                   ) : (
                     filteredGrds.map((grd) => {
-                      const totalSetores = 5;
                       const checklistGrd = respostas.filter(r => r.grdId === grd.id);
                       const aprovadosCount = checklistGrd.filter(r => r.status === 'APROVADO').length;
                       const reprovadosCount = checklistGrd.filter(r => r.status === 'REPROVADO').length;
-                      const pendentesCount = checklistGrd.filter(r => r.status === 'PENDENTE').length;
-                      
                       const progressPercentage = Math.round(((aprovadosCount + reprovadosCount) / (checklistGrd.length || 1)) * 100);
-
                       const isExceeded = getSimulatedTime() > grd.slaLimite && grd.status !== 'APROVADO' && grd.status !== 'REPROVADO';
 
+                      // Lista de áreas pendentes
+                      const allRoles: Role[] = ['TRABALHISTA', 'FISCAL', 'TECNICA', 'FINANCEIRA', 'QSSMA'];
+                      const areasPendentes = allRoles.filter(role => {
+                        const statusGrdItem = respostas.filter(r => r.grdId === grd.id && r.role === role);
+                        return statusGrdItem.length === 0 || statusGrdItem.some(r => r.status !== 'APROVADO');
+                      });
+
                       return (
-                        <div key={grd.id} className="p-5 hover:bg-slate-50/50 transition-colors">
+                        <div 
+                          key={grd.id} 
+                          onClick={() => {
+                            setSelectedGrdId(grd.id);
+                            setSelectedGrdForDetail(grd);
+                          }}
+                          className="p-5 hover:bg-slate-50/50 transition-colors cursor-pointer select-none"
+                        >
                           {/* Topo do item da fila */}
                           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
                             <div className="flex items-center gap-2 flex-wrap">
@@ -1446,12 +1559,12 @@ export default function App() {
                           </div>
 
                           {/* Barra de Progresso Real */}
-                          <div className="space-y-1 mb-4">
+                          <div className="space-y-1 mb-3">
                             <div className="flex justify-between text-[10px] font-bold text-slate-600">
                               <span>Progresso das Auditorias Técnicas</span>
                               <span>{progressPercentage}% ({aprovadosCount + reprovadosCount} de {checklistGrd.length} itens avaliados)</span>
                             </div>
-                            <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                            <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden font-sans">
                               <div 
                                 className={`h-1.5 rounded-full transition-all duration-300 ${reprovadosCount > 0 ? 'bg-rose-500' : 'bg-indigo-600'}`} 
                                 style={{ width: `${progressPercentage}%` }}
@@ -1459,26 +1572,31 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Grid de status das áreas especialistas */}
-                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4 border-y border-slate-100 py-3 bg-slate-50/30 px-3 rounded-lg">
-                            {(['TRABALHISTA', 'FISCAL', 'TECNICA', 'FINANCEIRA', 'QSSMA'] as Role[]).map(role => {
-                              const badge = getAreaStatusBadge(grd.id, role);
-                              const itemConfig = setoresConfig[role];
-                              return (
-                                <div key={role} className="flex flex-col items-center justify-center p-1.5 bg-white border border-slate-150 rounded-md">
-                                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1" title={itemConfig.nome}>
-                                    {role}
-                                  </span>
-                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${badge.css}`}>
-                                    {badge.label}
-                                  </span>
-                                </div>
-                              );
-                            })}
+                          {/* Quem falta assinar */}
+                          <div className="flex items-center gap-1.5 flex-wrap pt-1 text-[10px] font-sans">
+                            <span className="text-slate-500 font-bold">Faltam assinar:</span>
+                            {areasPendentes.length === 0 ? (
+                              <span className="text-emerald-600 font-bold bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-md text-[9px]">
+                                Todos assinaram
+                              </span>
+                            ) : (
+                              areasPendentes.map((sec) => (
+                                <span
+                                  key={sec}
+                                  className={`px-1.5 py-0.5 rounded-md font-semibold text-[9px] ${
+                                    respostas.some(r => r.grdId === grd.id && r.role === sec && r.status === 'REPROVADO')
+                                      ? 'bg-rose-50 text-rose-700 border border-rose-100 font-bold'
+                                      : 'bg-slate-50 text-slate-500 border border-slate-100'
+                                  }`}
+                                >
+                                  {sec}
+                                </span>
+                              ))
+                            )}
                           </div>
 
                           {/* Metadados inferiores (tempo limite de SLA e auditorias) */}
-                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-[11px] text-slate-500">
+                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-[11px] text-slate-500 mt-3 border-t border-slate-100 pt-3">
                             <div className="flex items-center gap-1.5">
                               <Clock className="w-3.5 h-3.5 text-slate-400" />
                               <span>SLA Limite: <strong>{grd.slaLimite.toLocaleString('pt-BR')}</strong></span>
@@ -1491,41 +1609,36 @@ export default function App() {
                             </span>
                           </div>
 
-                          {/* HISTÓRICO DE REPROVAÇÕES / DETALHAMENTO DE JUSTIFICATIVAS */}
-                          {checklistGrd.some(r => r.status === 'REPROVADO') && (
-                            <div className="mt-4 p-3.5 bg-rose-50/40 border border-rose-100 rounded-2xl space-y-2">
-                              <h5 className="text-xs font-display font-bold text-rose-800 flex items-center gap-1.5">
-                                <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-                                Rastreabilidade de Reprovações (Exigência do POP):
-                              </h5>
-                              <div className="space-y-2 divide-y divide-rose-100">
-                                {checklistGrd.filter(r => r.status === 'REPROVADO').map((r) => {
-                                  const itemMatriz = checklistMatriz.find(m => m.id === r.itemId);
-                                  return (
-                                    <div key={r.itemId} className="pt-2 text-[11px] first:pt-0">
-                                      <p className="text-slate-800 font-bold">
-                                        [{r.role}] Requisito #{r.itemId}: {itemMatriz?.descricao}
-                                      </p>
-                                      <p className="text-rose-700 bg-rose-50/60 p-2 rounded-lg border border-rose-200 mt-1 italic">
-                                        <strong>Justificativa da Pendência:</strong> "{r.justificativa}"
-                                      </p>
-                                      <p className="text-[10px] text-slate-400 mt-1">
-                                        Apontado por: {r.avaliadoPor} em {r.avaliadoEm?.toLocaleString('pt-BR')}
-                                      </p>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
+                          {/* Botões de Ação Especiais (Cobrança e Termo de Nada Consta) */}
+                          <div className="flex flex-col sm:flex-row gap-2 mt-3 pt-3 border-t border-slate-100/60">
+                            {grd.status !== 'APROVADO' && userRole === 'MEDICAO' && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTriggerCobranca(grd);
+                                }}
+                                className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold py-2 px-3 rounded-xl text-xs shadow-3xs transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                              >
+                                <Mail className="w-3.5 h-3.5" />
+                                Gerar Cobrança
+                              </button>
+                            )}
 
-                          {/* INFORMAÇÕES DE COMPLEMENTO SE TUDO ESTIVER CONCLUÍDO E APROVADO */}
-                          {grd.status === 'APROVADO' && (
-                            <div className="mt-3 p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-[11px] text-emerald-800 flex items-center gap-1.5">
-                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                              <span>Processo de medição final <strong>100% deferido e integrado</strong>. Pagamento e encerramento autorizados.</span>
-                            </div>
-                          )}
+                            {grd.status === 'APROVADO' && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingTermoGrd(grd);
+                                }}
+                                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded-xl text-xs shadow-3xs transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                              >
+                                <FileText className="w-3.5 h-3.5" />
+                                Gerar Termo Final (PDF)
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })
@@ -1533,6 +1646,351 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* POP-UP MODAL: NOVA GRD */}
+            {isCreatingGrd && (
+              <div className="fixed inset-0 z-55 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+                <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-2xl max-w-lg w-full relative space-y-4 animate-scale-up">
+                  <button 
+                    onClick={() => setIsCreatingGrd(false)}
+                    className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-650 hover:bg-slate-50 rounded-full transition-all cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+
+                  <div className="flex items-center gap-2.5 pb-2 border-b border-slate-100">
+                    <PlusCircle className="w-5 h-5 text-indigo-600" />
+                    <h3 className="text-sm font-display font-bold text-slate-900 font-sans">Cadastrar Novo Contrato / GRD</h3>
+                  </div>
+
+                  <form onSubmit={handleCreateGrd} className="space-y-4 font-sans">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Código/Número do Contrato *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: CT-2026-0045"
+                        value={newContrato}
+                        onChange={(e) => setNewContrato(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none shadow-3xs transition-all"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Nome do Fornecedor / Parceiro Comercial *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Alfa Prestadora de Serviços S/A"
+                        value={newFornecedor}
+                        onChange={(e) => setNewFornecedor(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none shadow-3xs transition-all"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Escopo Resumido (POP Anexo A)
+                      </label>
+                      <textarea
+                        rows={3}
+                        placeholder="Descreva resumidamente o objeto contratual e o escopo da medição final..."
+                        value={newEscopo}
+                        onChange={(e) => setNewEscopo(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none shadow-3xs resize-none transition-all"
+                      />
+                    </div>
+
+                    <div className="bg-indigo-50/60 rounded-xl p-3 border border-indigo-100 flex items-start gap-2">
+                      <HelpCircle className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <p className="text-[10px] text-indigo-900 leading-relaxed">
+                        <strong>Comportamento Automatizado do POP:</strong> Ao criar a GRD, o sistema criará o cabeçalho e instanciará automaticamente os requisitos pendentes para auditoria paralela das áreas especialistas.
+                      </p>
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsCreatingGrd(false)}
+                        className="flex-1 bg-slate-100 hover:bg-slate-150 text-slate-700 font-bold py-2.5 px-4 rounded-xl text-xs transition-all cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 bg-slate-900 hover:bg-slate-850 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <PlusCircle className="w-4 h-4" />
+                        Emitir GRD
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* POP-UP MODAL: DETALHES & AUDITORIA DE GRD */}
+            {selectedGrdForDetail && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+                <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-2xl max-w-2xl w-full relative space-y-4 animate-scale-up my-8 max-h-[90vh] overflow-y-auto font-sans">
+                  <button 
+                    type="button"
+                    onClick={() => setSelectedGrdForDetail(null)}
+                    className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-650 hover:bg-slate-50 rounded-full transition-all cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+
+                  <div className="border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="text-[10px] font-mono font-extrabold text-indigo-700 bg-indigo-50/70 border border-indigo-100 px-2.5 py-0.5 rounded-md">
+                        GRD #{selectedGrdForDetail.id}
+                      </span>
+                      <span className="text-xs font-mono font-bold text-slate-500">
+                        Contrato: {selectedGrdForDetail.numeroContrato}
+                      </span>
+                    </div>
+                    <h3 className="text-base font-display font-bold text-slate-900 leading-snug">
+                      {selectedGrdForDetail.nomeFornecedor}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      <strong>Escopo:</strong> {selectedGrdForDetail.escopo}
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-500 mt-3 bg-slate-50 p-2.5 rounded-xl border border-slate-150/40">
+                      <div>
+                        <span>Aberta por: <strong>{selectedGrdForDetail.criadoPor}</strong></span>
+                      </div>
+                      <div>
+                        <span>SLA Limite: <strong>{selectedGrdForDetail.slaLimite.toLocaleString('pt-BR')}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleSaveChecklist} className="space-y-4">
+                    {/* Exibir requisitos correspondentes ao perfil logado para serem auditados */}
+                    <div className="space-y-3">
+                      <h4 className="text-[11px] font-bold uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
+                        <Sliders className="w-3.5 h-3.5 text-indigo-600" />
+                        Minha Auditoria Técnica ({userRole})
+                      </h4>
+
+                      {checklistMatriz.filter(item => item.role === userRole).length === 0 ? (
+                        <div className="p-4 bg-slate-50 border border-slate-150 rounded-xl text-xs text-slate-500 italic">
+                          Seu perfil ({userRole}) não possui itens específicos de checklist cadastrados para auditoria nesta fase.
+                        </div>
+                      ) : (
+                        checklistMatriz.filter(item => item.role === userRole).map((item) => {
+                          const evalItem = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '', anexos: [] };
+                          
+                          return (
+                            <div key={item.id} className="p-4 bg-slate-50/60 border border-slate-200 rounded-xl space-y-3 shadow-3xs">
+                              <div className="flex justify-between items-start gap-2 flex-wrap">
+                                <span className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 font-bold px-2 py-0.5 rounded-md font-mono">
+                                  Requisito #{item.id} {item.popReferencia && `• ${item.popReferencia}`}
+                                </span>
+                                
+                                <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-bold">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleChecklistItemChange(item.id, 'status', 'APROVADO')}
+                                    className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                      evalItem.status === 'APROVADO'
+                                        ? 'bg-emerald-600 text-white shadow-3xs'
+                                        : 'text-slate-500 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    Aprovar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleChecklistItemChange(item.id, 'status', 'REPROVADO')}
+                                    className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                      evalItem.status === 'REPROVADO'
+                                        ? 'bg-rose-600 text-white shadow-3xs'
+                                        : 'text-slate-500 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    Reprovar
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              <p className="text-xs font-semibold text-slate-800 leading-relaxed">
+                                {item.descricao}
+                              </p>
+                              
+                              <p className="text-[10px] text-slate-500 bg-white p-2.5 rounded-lg border border-slate-150/50 italic">
+                                💡 <strong>Instrução POP:</strong> {item.instrucaoPop}
+                              </p>
+
+                              {/* Justificativa / Observação */}
+                              <div className="space-y-1">
+                                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                  Observações / Evidências: {(evalItem.status === 'REPROVADO' && isObservacaoObrigatoria) && <span className="text-rose-600 font-extrabold">*</span>}
+                                </label>
+                                <textarea
+                                  rows={2}
+                                  value={evalItem.justificativa}
+                                  onChange={(e) => handleChecklistItemChange(item.id, 'justificativa', e.target.value)}
+                                  placeholder={evalItem.status === 'REPROVADO' ? "ATENÇÃO: Descreva detalhadamente a desconformidade (mínimo 10 caracteres)." : "Registre detalhes da conferência ou apontamentos."}
+                                  className={`w-full bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:outline-none transition-all ${
+                                    evalItem.status === 'REPROVADO' && isObservacaoObrigatoria && evalItem.justificativa.trim().length < 10 
+                                      ? 'border-rose-300 focus:ring-rose-500 focus:border-rose-500 bg-rose-50/20' 
+                                      : 'border-slate-200 focus:ring-indigo-500 focus:border-indigo-500'
+                                  }`}
+                                />
+                              </div>
+
+                              {/* Área de Anexos */}
+                              <div className="space-y-2">
+                                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                  Anexos / Documentos Suporte: {isAnexoObrigatorio && <span className="text-indigo-600 font-extrabold">*</span>}
+                                </label>
+                                
+                                <div className="border border-dashed border-slate-200 rounded-xl p-3 bg-white text-center hover:bg-slate-50/50 transition-colors relative cursor-pointer">
+                                  <input
+                                    type="file"
+                                    multiple
+                                    onChange={(e) => {
+                                      if (e.target.files) {
+                                        handleAttachFiles(item.id, Array.from(e.target.files));
+                                      }
+                                    }}
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                  />
+                                  <Upload className="w-5 h-5 text-slate-400 mx-auto mb-1" />
+                                  <p className="text-[10px] text-slate-500">Arraste ou clique para anexar evidência documental</p>
+                                </div>
+
+                                {evalItem.anexos && evalItem.anexos.length > 0 && (
+                                  <div className="flex flex-wrap gap-2 pt-1">
+                                    {evalItem.anexos.map((anexo, aIdx) => (
+                                      <div key={aIdx} className="bg-slate-100 border border-slate-250 rounded-lg px-2 py-1 text-[10px] text-slate-700 flex items-center gap-1.5">
+                                        <Paperclip className="w-3 h-3 text-slate-400 shrink-0" />
+                                        <span className="truncate max-w-[120px]">{anexo.nome}</span>
+                                        <span className="text-slate-400 font-mono">({anexo.tamanho})</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveAttachment(item.id, aIdx)}
+                                          className="text-rose-550 hover:text-rose-700 p-0.5 ml-1 font-bold text-xs cursor-pointer"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Exibir situação dos outros setores */}
+                    <div className="space-y-2 pt-2 border-t border-slate-100">
+                      <h4 className="text-[11px] font-bold uppercase text-slate-400 tracking-wider">
+                        Status das Demais Áreas Especialistas
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {respostas
+                          .filter(r => r.grdId === selectedGrdForDetail.id && r.role !== userRole)
+                          .map((r, rIdx) => {
+                            const itemMatriz = checklistMatriz.find(m => m.id === r.itemId);
+                            return (
+                              <div key={rIdx} className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-[11px] space-y-1 font-sans">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-bold text-slate-700">[{r.role}] Requisito #{r.itemId}</span>
+                                  <span className={`px-1.5 py-0.5 rounded-md font-bold text-[9px] ${
+                                    r.status === 'APROVADO'
+                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                      : r.status === 'REPROVADO'
+                                      ? 'bg-rose-50 text-rose-700 border border-rose-100'
+                                      : 'bg-amber-50 text-amber-650 border border-amber-100'
+                                  }`}>
+                                    {r.status === 'APROVADO' && 'CONFORME'}
+                                    {r.status === 'REPROVADO' && 'PENDÊNCIA'}
+                                    {r.status === 'PENDENTE' && 'PENDENTE'}
+                                  </span>
+                                </div>
+                                <p className="text-slate-500 italic line-clamp-2 text-[10px]" title={itemMatriz?.descricao}>
+                                  {itemMatriz?.descricao}
+                                </p>
+                                {r.justificativa && (
+                                  <p className={`p-1.5 rounded-lg border italic text-[10px] leading-snug font-sans ${
+                                    r.status === 'REPROVADO'
+                                      ? 'text-rose-700 bg-rose-50/50 border-rose-100/50'
+                                      : 'text-slate-650 bg-slate-50 border-slate-150'
+                                  }`}>
+                                    <strong>{r.status === 'REPROVADO' ? 'Justificativa' : 'Observações'}:</strong> "{r.justificativa}"
+                                  </p>
+                                )}
+                                {r.avaliadoPor && (
+                                  <p className="text-[9px] text-slate-400">
+                                    Por: {r.avaliadoPor}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 pt-4 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedGrdForDetail(null)}
+                        className="flex-1 bg-slate-100 hover:bg-slate-150 text-slate-700 font-bold py-2.5 px-4 rounded-xl text-xs transition-all cursor-pointer font-sans"
+                      >
+                        Fechar
+                      </button>
+
+                      {selectedGrdForDetail.status === 'APROVADO' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setViewingTermoGrd(selectedGrdForDetail);
+                            setSelectedGrdForDetail(null);
+                          }}
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                        >
+                          <FileText className="w-4 h-4 text-white" />
+                          Termo de Encerramento (PDF)
+                        </button>
+                      )}
+
+                      {selectedGrdForDetail.status !== 'APROVADO' && userRole === 'MEDICAO' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleTriggerCobranca(selectedGrdForDetail);
+                            setSelectedGrdForDetail(null);
+                          }}
+                          className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                        >
+                          <Mail className="w-4 h-4" />
+                          Gerar Cobrança
+                        </button>
+                      )}
+                      
+                      {selectedGrdForDetail.status !== 'APROVADO' && checklistMatriz.filter(item => item.role === userRole).length > 0 && (
+                        <button
+                          type="submit"
+                          className="flex-1 bg-slate-900 hover:bg-slate-850 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                        >
+                          <UserCheck className="w-4 h-4 text-white" />
+                          Salvar & Enviar ao Banco
+                        </button>
+                      )}
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1990,6 +2448,107 @@ export default function App() {
                 {/* 4. SUBMENU DEV (CONTROLE DE SLA SIMULADO + ENTREGÁVEIS TÉCNICOS) */}
                 {configSubTab === 'dev' && (
                   <div className="space-y-6 animate-fade-in">
+                    {/* Parâmetros de Obrigatoriedade de Observações / Anexos */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-xs space-y-5">
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-display font-bold text-slate-900 flex items-center gap-2">
+                          <Sliders className="w-4.5 h-4.5 text-indigo-600" />
+                          Parametrização de Validação (Regras de Negócio)
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Habilite ou desabilite regras do POP Digital de forma dinâmica para flexibilizar a rotina de auditoria das GRDs.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                        {/* 1. Obrigatoriedade de Observação em Reprovações */}
+                        <div className="bg-white border border-slate-200 rounded-xl p-4.5 flex flex-col justify-between gap-3 shadow-3xs">
+                          <div className="space-y-1">
+                            <h5 className="text-xs font-bold text-slate-900">
+                              Obrigatoriedade da Observação Técnica
+                            </h5>
+                            <p className="text-[11px] text-slate-500 leading-normal">
+                              Quando ativado, exige uma justificativa de no mínimo 10 caracteres para reprovações.
+                            </p>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-150 rounded-lg p-1 w-fit select-none self-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsObservacaoObrigatoria(true);
+                                localStorage.setItem('pop_is_obs_required', 'true');
+                              }}
+                              className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                isObservacaoObrigatoria
+                                  ? 'bg-indigo-600 text-white shadow-3xs'
+                                  : 'text-slate-500 hover:text-slate-800'
+                              }`}
+                            >
+                              Obrigatório
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsObservacaoObrigatoria(false);
+                                localStorage.setItem('pop_is_obs_required', 'false');
+                              }}
+                              className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                !isObservacaoObrigatoria
+                                  ? 'bg-indigo-600 text-white shadow-3xs'
+                                  : 'text-slate-500 hover:text-slate-800'
+                              }`}
+                            >
+                              Opcional
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 2. Obrigatoriedade de Anexos em Validações */}
+                        <div className="bg-white border border-slate-200 rounded-xl p-4.5 flex flex-col justify-between gap-3 shadow-3xs">
+                          <div className="space-y-1">
+                            <h5 className="text-xs font-bold text-slate-900">
+                              Obrigatoriedade de Anexo de Evidências
+                            </h5>
+                            <p className="text-[11px] text-slate-500 leading-normal">
+                              Quando ativado, obriga o upload de pelo menos uma evidência (anexo) para validar ou reprovar itens.
+                            </p>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-150 rounded-lg p-1 w-fit select-none self-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsAnexoObrigatorio(true);
+                                localStorage.setItem('pop_is_anexo_required', 'true');
+                              }}
+                              className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                isAnexoObrigatorio
+                                  ? 'bg-indigo-600 text-white shadow-3xs'
+                                  : 'text-slate-500 hover:text-slate-800'
+                              }`}
+                            >
+                              Obrigatório
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsAnexoObrigatorio(false);
+                                localStorage.setItem('pop_is_anexo_required', 'false');
+                              }}
+                              className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                !isAnexoObrigatorio
+                                  ? 'bg-indigo-600 text-white shadow-3xs'
+                                  : 'text-slate-500 hover:text-slate-800'
+                              }`}
+                            >
+                              Opcional
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Parâmetro de Sistema - Ativação/Desativação de SLA */}
                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-xs space-y-4">
                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2293,6 +2852,92 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* MODAL IA DE COBRANÇA INTELIGENTE */}
+      {grdForCobranca && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header do Modal */}
+            <div className="bg-gradient-to-r from-indigo-650 to-violet-700 text-white p-5 flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 bg-white/10 rounded-lg">
+                  <Sparkles className="w-5 h-5 text-indigo-200 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-base text-white">IA de Cobrança Inteligente</h3>
+                  <p className="text-[11px] text-indigo-100/90 font-medium">Notificação Automatizada de Pendências de GRD</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setGrdForCobranca(null)}
+                className="p-1.5 hover:bg-white/15 rounded-lg text-indigo-100 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Corpo do Modal */}
+            <div className="p-6 overflow-y-auto space-y-4">
+              <p className="text-xs text-slate-500 font-medium leading-relaxed font-sans">
+                Aqui está um rascunho de e-mail customizado gerado automaticamente com base nas pendências técnicas de auditoria identificadas para este contrato. Você pode revisar e editar o texto à vontade.
+              </p>
+
+              {/* Caixa de Texto do E-mail */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold text-slate-450 uppercase tracking-wider">
+                  Conteúdo do E-mail (Editável)
+                </label>
+                <textarea
+                  rows={12}
+                  value={cobrancaEmailDraft}
+                  onChange={(e) => setCobrancaEmailDraft(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs font-sans text-slate-700 focus:ring-1 focus:ring-indigo-500 focus:outline-none focus:bg-white transition-all font-medium leading-relaxed resize-none"
+                />
+              </div>
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="p-5 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-end items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setGrdForCobranca(null)}
+                className="w-full sm:w-auto px-5 py-2.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-600 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer font-sans"
+              >
+                Cancelar
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(cobrancaEmailDraft);
+                  setIsCopied(true);
+                  setTimeout(() => {
+                    setIsCopied(false);
+                    setGrdForCobranca(null);
+                  }, 2000);
+                }}
+                className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-white text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 font-sans ${
+                  isCopied 
+                    ? 'bg-emerald-600 hover:bg-emerald-700' 
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                {isCopied ? (
+                  <>
+                    <Check className="w-4 h-4 text-white" />
+                    E-mail Copiado!
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="w-4 h-4 text-white" />
+                    Copiar E-mail
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="bg-slate-950 text-slate-400 text-xs py-12 mt-16 border-t border-slate-900">
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4 text-center md:text-left font-sans">

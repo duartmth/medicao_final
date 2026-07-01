@@ -7,7 +7,7 @@ services:
     container_name: mssql-db
     environment:
       - ACCEPT_EULA=Y
-      - MSSQL_SA_PASSWORD=SuaSenhaSuperSegura123!
+      - MSSQL_SA_PASSWORD=Egelte140676
     ports:
       - "1433:1433"
     volumes:
@@ -29,7 +29,7 @@ services:
       - DB_PORT=1433
       - DB_USER=sa
       - DB_PASSWORD=SuaSenhaSuperSegura123!
-      - DB_NAME=GrdChecklistDB
+      - DB_NAME=MedicaoContratos
       - DB_ENCRYPT=false
     depends_on:
       - mssql-db

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FileText, 
   Database, 
@@ -167,6 +167,7 @@ interface GRD {
 }
 
 interface RespostaChecklist {
+  id?: number; // ID real da resposta transacional no banco
   grdId: number;
   itemId: number;
   role: Role;
@@ -229,6 +230,8 @@ const RESPOSTAS_INICIAIS: RespostaChecklist[] = [
   { grdId: 102, itemId: 11, role: 'QSSMA', status: 'PENDENTE' }
 ];
 
+const API_URL = '/api';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'simulator' | 'cadastro' | 'ddl' | 'streamlit' | 'sla'>('simulator');
   const [userRole, setUserRole] = useState<Role>('MEDICAO');
@@ -236,26 +239,20 @@ export default function App() {
   // Login State
   const [loggedInUser, setLoggedInUser] = useState<UsuarioSimulado | null>(null);
 
-  // Estados do Simulador
+  // Estados do Simulador (Dinâmicos via SQL Server)
   const [grds, setGrds] = useState<GRD[]>([]);
   const [respostas, setRespostas] = useState<RespostaChecklist[]>([]);
   const [simulatedTimeHoursOffset, setSimulatedTimeHoursOffset] = useState<number>(0);
   const [searchText, setSearchText] = useState<string>('');
-  const [grdFilter, setGrdFilter] = useState<'TODAS' | 'CONCLUIDAS' | 'EM_ANDAMENTO' | 'MINHA_APROVACAO'>('TODAS');
+  const [grdFilter, setGrdFilter] = useState<'TODAS' | 'CONCLUIDAS' | 'EM_ANDAMENTO' | 'MINHA_APROVACAO'>('EM_ANDAMENTO');
   const [isCreatingGrd, setIsCreatingGrd] = useState<boolean>(false);
   const [selectedGrdForDetail, setSelectedGrdForDetail] = useState<GRD | null>(null);
   const [viewingTermoGrd, setViewingTermoGrd] = useState<GRD | null>(null);
   const [grdForCobranca, setGrdForCobranca] = useState<GRD | null>(null);
   const [cobrancaEmailDraft, setCobrancaEmailDraft] = useState<string>('');
   const [isCopied, setIsCopied] = useState<boolean>(false);
-  const [isObservacaoObrigatoria, setIsObservacaoObrigatoria] = useState<boolean>(() => {
-    const cached = localStorage.getItem('pop_is_obs_required');
-    return cached === null ? true : cached === 'true';
-  });
-  const [isAnexoObrigatorio, setIsAnexoObrigatorio] = useState<boolean>(() => {
-    const cached = localStorage.getItem('pop_is_anexo_required');
-    return cached === null ? false : cached === 'true';
-  });
+  const [isObservacaoObrigatoria, setIsObservacaoObrigatoria] = useState<boolean>(true);
+  const [isAnexoObrigatorio, setIsAnexoObrigatorio] = useState<boolean>(false);
 
   // Estados Dinâmicos de Matriz, Usuários & Departamentos
   const [checklistMatriz, setChecklistMatriz] = useState<ChecklistItem[]>([]);
@@ -278,10 +275,7 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState('');
 
   // Configuração Global de SLA e Sub-abas de Configuração
-  const [isTimeTravelEnabled, setIsTimeTravelEnabled] = useState<boolean>(() => {
-    const cached = localStorage.getItem('pop_is_time_travel_enabled');
-    return cached === null ? true : cached === 'true';
-  });
+  const [isTimeTravelEnabled, setIsTimeTravelEnabled] = useState<boolean>(true);
   const [configSubTab, setConfigSubTab] = useState<'usuarios' | 'departamentos' | 'checklist' | 'dev'>('usuarios');
   const [devDeliverableTab, setDevDeliverableTab] = useState<'ddl' | 'streamlit' | 'sla_py'>('ddl');
 
@@ -305,127 +299,134 @@ export default function App() {
   // Copiar código helper state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Inicialização do localStorage
-  useEffect(() => {
-    const cachedGrds = localStorage.getItem('pop_grds');
-    const cachedResp = localStorage.getItem('pop_respostas');
-    const cachedOffset = localStorage.getItem('pop_time_offset');
-    const cachedMatriz = localStorage.getItem('pop_checklist_matriz');
-    const cachedUsuarios = localStorage.getItem('pop_usuarios');
-    const cachedSelectedUser = localStorage.getItem('pop_selected_user_id');
-    const cachedSetores = localStorage.getItem('pop_setores_config');
-    const cachedLogin = localStorage.getItem('pop_logged_in_user');
-    
-    if (cachedLogin) {
-      try {
-        setLoggedInUser(JSON.parse(cachedLogin));
-      } catch (e) {
-        console.error('Erro ao ler usuário logado do cache', e);
-      }
-    }
+  // --- BUSCA DE DADOS INTEGRADA COM O BANCO DE DADOS (API) ---
 
-    if (cachedGrds && cachedResp) {
-      // Re-parse de datas
-      const parsedGrds = JSON.parse(cachedGrds).map((g: any) => ({
-        ...g,
-        criadoEm: new Date(g.criadoEm),
-        slaLimite: new Date(g.slaLimite),
-        concluidoEm: g.concluidoEm ? new Date(g.concluidoEm) : undefined
-      }));
-      setGrds(parsedGrds);
+  const fetchGrds = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/grds`);
+      if (!response.ok) throw new Error(`Status HTTP ${response.status}`);
+      const data = await response.json();
       
-      const parsedResp = JSON.parse(cachedResp).map((r: any) => ({
-        ...r,
-        avaliadoEm: r.avaliadoEm ? new Date(r.avaliadoEm) : undefined
+      const mappedGrds: GRD[] = data.map((g: any) => ({
+        id: g.id,
+        numeroContrato: g.numeroContrato,
+        nomeFornecedor: g.nomeFornecedor,
+        escopo: g.escopoResumido || "Não fornecido",
+        criadoEm: new Date(g.criadoEm),
+        criadoPor: g.criadorNome ? `${g.criadorNome} (Setor Medição)` : `Usuário #${g.criadoPor}`,
+        criadoPorId: String(g.criadoPor),
+        slaLimite: new Date(g.slaLimite),
+        status: g.status as 'EM_ANDAMENTO' | 'APROVADO' | 'REPROVADO' | 'SLA_EXPIRADO',
+        concluidoEm: g.dataConclusao ? new Date(g.dataConclusao) : undefined
       }));
-      setRespostas(parsedResp);
-    } else {
-      setGrds(GRDS_INICIAIS);
-      setRespostas(RESPOSTAS_INICIAIS);
-    }
 
-    if (cachedMatriz) {
-      setChecklistMatriz(JSON.parse(cachedMatriz));
-    } else {
-      setChecklistMatriz(CHECKLIST_MATRIZ);
-    }
-
-    if (cachedUsuarios) {
-      try {
-        const rawUsers = JSON.parse(cachedUsuarios);
-        let parsedUsers = rawUsers.map((u: any) => {
-          const generatedUsername = (u.username || u.nome || '').trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '.');
-          const defaultPasswords: Record<string, string> = {
-            '1': '123', '2': '123', '3': '123', '4': '123', '5': '123', '6': '123',
-            'carlos.medicao': '123', 'mariana.trabalhista': '123', 'roberto.fiscal': '123',
-            'amanda.tecnica': '123', 'julio.financeiro': '123', 'fernanda.qssma': '123',
-            'root': 'admin', 'gerente': '123'
-          };
-          const password = u.password || defaultPasswords[u.id] || defaultPasswords[generatedUsername] || '123';
-          
-          let tipo = u.tipo;
-          if (!tipo) {
-            if (generatedUsername === 'root' || (u.nome || '').toLowerCase().includes('admin') || u.id === '7') {
-              tipo = 'ROOT';
-            } else if (generatedUsername === 'gerente' || (u.nome || '').toLowerCase().includes('gerente') || u.id === '8') {
-              tipo = 'GERENCIADOR';
-            } else {
-              tipo = 'OPERADOR';
-            }
-          }
-
-          return {
-            ...u,
-            username: u.username || generatedUsername,
-            password,
-            tipo
-          };
-        });
-
-        // Garantir que todos os USUARIOS_PADRAO padrões existam na lista mesclada por username
-        USUARIOS_PADRAO.forEach(defaultUser => {
-          const exists = parsedUsers.some((pu: any) => pu.username === defaultUser.username || pu.id === defaultUser.id);
-          if (!exists) {
-            parsedUsers.push(defaultUser);
-          }
-        });
-
-        setUsuarios(parsedUsers);
-        if (cachedSelectedUser) {
-          setSelectedUserId(cachedSelectedUser);
-        } else if (parsedUsers.length > 0) {
-          setSelectedUserId(parsedUsers[0].id);
+      // Consolida respostas planas das GRDs para manter a compatibilidade do JSX
+      const todasRespostas: RespostaChecklist[] = [];
+      data.forEach((g: any) => {
+        if (g.checklist) {
+          g.checklist.forEach((c: any) => {
+            todasRespostas.push({
+              id: c.id, // ID transacional da resposta no banco
+              grdId: g.id,
+              itemId: c.checklistItemId,
+              role: c.setor as Role,
+              status: c.status as 'PENDENTE' | 'APROVADO' | 'REPROVADO',
+              justificativa: c.justificativa || undefined,
+              avaliadoPor: c.avaliadoPor ? String(c.avaliadoPor) : undefined,
+              avaliadoEm: c.avaliadoEm ? new Date(c.avaliadoEm) : undefined,
+              anexos: []
+            });
+          });
         }
-      } catch (e) {
-        console.error('Erro ao ler usuários do cache', e);
-        setUsuarios(USUARIOS_PADRAO);
-        setSelectedUserId('1');
+      });
+
+      setGrds(mappedGrds);
+      setRespostas(todasRespostas);
+
+      // Seta a primeira GRD ativa como selecionada se nenhuma selecionada
+      if (mappedGrds.length > 0 && !mappedGrds.some(g => g.id === selectedGrdId)) {
+        setSelectedGrdId(mappedGrds[0].id);
       }
-    } else {
-      setUsuarios(USUARIOS_PADRAO);
-      setSelectedUserId('1');
+    } catch (error: any) {
+      console.error('[API Error] Erro ao buscar GRDs:', error.message);
     }
+  }, [selectedGrdId]);
 
-    if (cachedSetores) {
-      setSetoresConfig(JSON.parse(cachedSetores));
-    } else {
-      setSetoresConfig(SETORES_CONFIG);
-    }
+  const fetchUsuarios = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/usuarios`);
+      if (!response.ok) throw new Error(`Status HTTP ${response.status}`);
+      const data: any[] = await response.json();
+      
+      const mappedUsers: UsuarioSimulado[] = data.map((u: any) => ({
+        id: String(u.id),
+        nome: u.nome,
+        username: u.username,
+        password: '123',
+        tipo: u.tipo as UserType,
+        role: u.role as Role,
+        email: u.email
+      }));
 
-    if (cachedOffset) {
-      setSimulatedTimeHoursOffset(Number(cachedOffset));
+      setUsuarios(mappedUsers);
+
+      const cachedSelected = localStorage.getItem('pop_selected_user_id');
+      if (cachedSelected && mappedUsers.some(u => u.id === cachedSelected)) {
+        setSelectedUserId(cachedSelected);
+      } else if (mappedUsers.length > 0) {
+        setSelectedUserId(mappedUsers[0].id);
+      }
+    } catch (error: any) {
+      console.error('[API Error] Erro ao buscar usuários:', error.message);
     }
   }, []);
+
+  const fetchChecklistMatriz = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/checklist-matriz`);
+      if (!response.ok) throw new Error(`Status HTTP ${response.status}`);
+      const data: any[] = await response.json();
+
+      const mappedMatriz: ChecklistItem[] = data.map((m: any) => ({
+        id: m.id,
+        role: m.role as Role,
+        descricao: m.descricao,
+        instrucaoPop: m.instrucaoPop || `Instrução POP normatizada para o item ID #${m.id}`
+      }));
+
+      setChecklistMatriz(mappedMatriz);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao buscar matriz de checklist:', error.message);
+    }
+  }, []);
+
+  // Inicialização única no carregamento da tela
+  useEffect(() => {
+    const initData = async () => {
+      await fetchUsuarios();
+      await fetchChecklistMatriz();
+      await fetchGrds();
+
+      // Restaura login local da sessão do frontend
+      const cachedLogin = localStorage.getItem('pop_logged_in_user');
+      if (cachedLogin) {
+        try {
+          setLoggedInUser(JSON.parse(cachedLogin));
+        } catch (e) {
+          console.error('Erro ao ler login da sessão', e);
+        }
+      }
+    };
+    initData();
+  }, [fetchUsuarios, fetchChecklistMatriz, fetchGrds]);
 
   // Sincronização de Roles e Controle de Abas com base no Login e Usuário Selecionado
   useEffect(() => {
     if (loggedInUser) {
-      // Se não for root ou gerenciador, e tentar ver cadastro (Configurações), manda pro simulador
       if (loggedInUser.tipo !== 'ROOT' && loggedInUser.tipo !== 'GERENCIADOR' && activeTab === 'cadastro') {
         setActiveTab('simulator');
       }
 
-      // Se for ROOT, segue o selectedUserId (Operador Ativo)
       if (loggedInUser.tipo === 'ROOT') {
         const found = usuarios.find(u => u.id === selectedUserId);
         if (found) {
@@ -434,37 +435,14 @@ export default function App() {
           setUserRole(loggedInUser.role);
         }
       } else {
-        // Se não for ROOT, o operador ativo é fixo em si mesmo
         setUserRole(loggedInUser.role);
       }
     }
   }, [loggedInUser, selectedUserId, usuarios, activeTab]);
 
-  // Salvar alterações no LocalStorage
-  const saveSimulatorState = (
-    newGrds: GRD[], 
-    newResp: RespostaChecklist[], 
-    newOffset: number,
-    newMatriz?: ChecklistItem[],
-    newUsers?: UsuarioSimulado[],
-    selectedUid?: string,
-    newSetores?: Record<Role, SetorInfo>
-  ) => {
-    localStorage.setItem('pop_grds', JSON.stringify(newGrds));
-    localStorage.setItem('pop_respostas', JSON.stringify(newResp));
-    localStorage.setItem('pop_time_offset', String(newOffset));
-    if (newMatriz) {
-      localStorage.setItem('pop_checklist_matriz', JSON.stringify(newMatriz));
-    }
-    if (newUsers) {
-      localStorage.setItem('pop_usuarios', JSON.stringify(newUsers));
-    }
-    if (selectedUid) {
-      localStorage.setItem('pop_selected_user_id', selectedUid);
-    }
-    if (newSetores) {
-      localStorage.setItem('pop_setores_config', JSON.stringify(newSetores));
-    }
+  // Stub de compatibilidade vazio para evitar quebras no JSX legado
+  const saveSimulatorState = (..._args: any[]) => {
+    // A persistência agora é de fato no SQL Server via APIs transacionais
   };
 
   // Cálculo da hora atual simulada baseada no offset
@@ -558,8 +536,8 @@ export default function App() {
     setChecklistEvaluations({});
   };
 
-  // Cadastrar Novo Usuário Simulado
-  const handleAddUser = (e: React.FormEvent) => {
+  // Cadastrar Novo Usuário Simulado na API e SQL Server
+  const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserName.trim()) return;
     
@@ -572,81 +550,138 @@ export default function App() {
       return;
     }
 
-    const newId = String(usuarios.length > 0 ? Math.max(...usuarios.map(u => Number(u.id))) + 1 : 1);
-    const newUser: UsuarioSimulado = {
-      id: newId,
-      nome: newUserName.trim(),
-      username: finalUsername,
-      password: newUserPassword.trim() || '123',
-      tipo: newUserTipo,
-      role: newUserRole,
-      email: newUserEmail.trim() || undefined
-    };
-    const updatedUsers = [...usuarios, newUser];
-    setUsuarios(updatedUsers);
-    saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, checklistMatriz, updatedUsers, selectedUserId, setoresConfig);
-    
-    // Limpar formulário
-    setNewUserName('');
-    setNewUserUsername('');
-    setNewUserPassword('');
-    setNewUserEmail('');
-    setNewUserTipo('OPERADOR');
-    
-    setEvaluationSuccess(`Usuário ${newUser.nome} cadastrado com sucesso (login: ${newUser.username}) no setor ${setoresConfig[newUserRole].nome}!`);
-    setTimeout(() => setEvaluationSuccess(null), 4000);
+    try {
+      const response = await fetch(`${API_URL}/usuarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nome: newUserName.trim(),
+          username: finalUsername,
+          tipo: newUserTipo,
+          role: newUserRole,
+          email: newUserEmail.trim() || `${finalUsername}@empresa.com.br`
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Status HTTP ${response.status}`);
+      }
+
+      const createdUser = await response.json();
+      await fetchUsuarios();
+
+      // Limpar formulário
+      setNewUserName('');
+      setNewUserUsername('');
+      setNewUserPassword('');
+      setNewUserEmail('');
+      setNewUserTipo('OPERADOR');
+      
+      setEvaluationSuccess(`Usuário ${createdUser.nome} cadastrado com sucesso (ID: ${createdUser.id}, login: ${createdUser.username}) no setor ${setoresConfig[newUserRole].nome}!`);
+      setTimeout(() => setEvaluationSuccess(null), 4000);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao cadastrar usuário:', error);
+      setValidationError(`Erro ao cadastrar usuário na API: ${error.message}`);
+      setTimeout(() => setValidationError(null), 5000);
+    }
   };
 
-  // Remover Usuário Simulado
-  const handleDeleteUser = (id: string) => {
+  // Remover Usuário Simulado da API
+  const handleDeleteUser = async (id: string) => {
     if (usuarios.length <= 1) {
       setValidationError("Erro: É necessário ter pelo menos um usuário no sistema.");
       setTimeout(() => setValidationError(null), 4000);
       return;
     }
-    const updatedUsers = usuarios.filter(u => u.id !== id);
-    setUsuarios(updatedUsers);
-    
-    let newSelectedUid = selectedUserId;
-    if (selectedUserId === id) {
-      newSelectedUid = updatedUsers[0].id;
-      setSelectedUserId(newSelectedUid);
-      setUserRole(updatedUsers[0].role);
+
+    try {
+      const response = await fetch(`${API_URL}/usuarios/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Status HTTP ${response.status}`);
+      }
+
+      await fetchUsuarios();
+      
+      let newSelectedUid = selectedUserId;
+      if (selectedUserId === id) {
+        newSelectedUid = usuarios.find(u => u.id !== id)?.id || '1';
+        setSelectedUserId(newSelectedUid);
+        const nextUser = usuarios.find(u => u.id === newSelectedUid);
+        if (nextUser) {
+          setUserRole(nextUser.role);
+        }
+      }
+      
+      setEvaluationSuccess("Usuário removido com sucesso do SQL Server.");
+      setTimeout(() => setEvaluationSuccess(null), 3000);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao remover usuário:', error);
+      setValidationError(`Erro ao remover usuário: ${error.message}`);
+      setTimeout(() => setValidationError(null), 5000);
     }
-    
-    saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, checklistMatriz, updatedUsers, newSelectedUid, setoresConfig);
-    setEvaluationSuccess("Usuário removido com sucesso.");
-    setTimeout(() => setEvaluationSuccess(null), 3000);
   };
 
-  // Cadastrar Novo Item na Matriz do Checklist
-  const handleAddChecklistItem = (e: React.FormEvent) => {
+  // Cadastrar Novo Item na Matriz do Checklist na API
+  const handleAddChecklistItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItemDesc.trim()) return;
-    const newId = checklistMatriz.length > 0 ? Math.max(...checklistMatriz.map(item => item.id)) + 1 : 1;
-    const newItem: ChecklistItem = {
-      id: newId,
-      role: newItemRole,
-      descricao: newItemDesc.trim(),
-      instrucaoPop: newItemPop.trim() || `Instrução POP correspondente ao item #${newId}`
-    };
-    const updatedMatriz = [...checklistMatriz, newItem];
-    setChecklistMatriz(updatedMatriz);
-    saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, updatedMatriz, usuarios, selectedUserId, setoresConfig);
-    setNewItemDesc('');
-    setNewItemPop('');
     
-    setEvaluationSuccess(`Item #${newId} adicionado com sucesso à matriz do setor ${setoresConfig[newItemRole].nome}!`);
-    setTimeout(() => setEvaluationSuccess(null), 4000);
+    try {
+      const response = await fetch(`${API_URL}/checklist-matriz`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: newItemRole,
+          descricao: newItemDesc.trim(),
+          instrucaoPop: newItemPop.trim() || `Instrução POP normatizada para o setor ${newItemRole}`
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Status HTTP ${response.status}`);
+      }
+
+      const createdItem = await response.json();
+      await fetchChecklistMatriz();
+      
+      setNewItemDesc('');
+      setNewItemPop('');
+      
+      setEvaluationSuccess(`Item #${createdItem.id} adicionado com sucesso à matriz do setor ${setoresConfig[newItemRole].nome}!`);
+      setTimeout(() => setEvaluationSuccess(null), 4000);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao adicionar item de checklist:', error);
+      setValidationError(`Erro ao adicionar item de checklist: ${error.message}`);
+      setTimeout(() => setValidationError(null), 5000);
+    }
   };
 
-  // Remover Item da Matriz
-  const handleDeleteChecklistItem = (id: number) => {
-    const updatedMatriz = checklistMatriz.filter(item => item.id !== id);
-    setChecklistMatriz(updatedMatriz);
-    saveSimulatorState(grds, respostas, simulatedTimeHoursOffset, updatedMatriz, usuarios, selectedUserId, setoresConfig);
-    setEvaluationSuccess(`Item de checklist #${id} removido com sucesso da matriz.`);
-    setTimeout(() => setEvaluationSuccess(null), 3000);
+  // Remover Item da Matriz na API
+  const handleDeleteChecklistItem = async (id: number) => {
+    try {
+      const response = await fetch(`${API_URL}/checklist-matriz/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Status HTTP ${response.status}`);
+      }
+
+      await fetchChecklistMatriz();
+      setEvaluationSuccess(`Item de checklist #${id} removido com sucesso da matriz.`);
+      setTimeout(() => setEvaluationSuccess(null), 3000);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao remover item de checklist:', error);
+      setValidationError(`Erro ao remover item de checklist: ${error.message}`);
+      setTimeout(() => setValidationError(null), 5000);
+    }
   };
 
   // Salvar Edição do Departamento / Setor
@@ -669,57 +704,52 @@ export default function App() {
     setTimeout(() => setEvaluationSuccess(null), 4000);
   };
 
-  // Criar uma nova GRD (Fluxo do Setor de Medição)
-  const handleCreateGrd = (e: React.FormEvent) => {
+  // Criar uma nova GRD na API (Com transações em banco que instanciam checklists associados)
+  const handleCreateGrd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newContrato.trim() || !newFornecedor.trim()) {
       setValidationError("O número do contrato e o nome do fornecedor são obrigatórios.");
       return;
     }
 
-    const simTime = getSimulatedTime();
-    const newGrdId = grds.length > 0 ? Math.max(...grds.map(g => g.id)) + 1 : 101;
-    
-    // SLA padrão de 48 horas conforme POP
-    const slaLimite = new Date(simTime.getTime() + 48 * 60 * 60 * 1000);
+    try {
+      const response = await fetch(`${API_URL}/grds`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          numeroContrato: newContrato.trim(),
+          nomeFornecedor: newFornecedor.trim(),
+          escopoResumido: newEscopo.trim() || "Não fornecido",
+          criadoPor: Number(currentUser.id) || 1
+        })
+      });
 
-    const novaGrd: GRD = {
-      id: newGrdId,
-      numeroContrato: newContrato,
-      nomeFornecedor: newFornecedor,
-      escopo: newEscopo || "Não fornecido",
-      criadoEm: simTime,
-      criadoPor: `${currentUser.nome} (${setoresConfig[userRole]?.nome || 'Setor Medição'})`,
-      slaLimite: slaLimite,
-      status: 'EM_ANDAMENTO'
-    };
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Status HTTP ${response.status}`);
+      }
 
-    // Gera checklist em branco para cada um dos itens da matriz base de checklist
-    const novasRespostas: RespostaChecklist[] = checklistMatriz.map(item => ({
-      grdId: newGrdId,
-      itemId: item.id,
-      role: item.role,
-      status: 'PENDENTE'
-    }));
+      const createdGrd = await response.json();
+      
+      // Sincroniza dados completos do SQL Server imediatamente
+      await fetchGrds();
 
-    const updatedGrds = [novaGrd, ...grds];
-    const updatedResp = [...respostas, ...novasRespostas];
+      setNewContrato('');
+      setNewFornecedor('');
+      setNewEscopo('');
+      setValidationError(null);
+      setFormSuccessMessage(`GRD #${createdGrd.id} emitida com sucesso! Checklists de Auditoria gerados com integridade relacional.`);
+      setSelectedGrdId(createdGrd.id);
+      setIsCreatingGrd(false);
 
-    setGrds(updatedGrds);
-    setRespostas(updatedResp);
-    saveSimulatorState(updatedGrds, updatedResp, simulatedTimeHoursOffset, checklistMatriz, usuarios, selectedUserId, setoresConfig);
-
-    setNewContrato('');
-    setNewFornecedor('');
-    setNewEscopo('');
-    setValidationError(null);
-    setFormSuccessMessage(`GRD #${newGrdId} emitida com sucesso! Checklists dinâmicos instanciados para os 5 departamentos.`);
-    setSelectedGrdId(newGrdId);
-    setIsCreatingGrd(false);
-
-    setTimeout(() => {
-      setFormSuccessMessage(null);
-    }, 5000);
+      setTimeout(() => {
+        setFormSuccessMessage(null);
+      }, 5000);
+    } catch (error: any) {
+      console.error('[API Error] Erro ao criar GRD:', error);
+      setValidationError(`Erro ao criar GRD no SQL Server: ${error.message}`);
+      setTimeout(() => setValidationError(null), 5000);
+    }
   };
 
   // Inicializa o formulário de avaliação do departamento com o estado atual do banco simulado
@@ -790,8 +820,8 @@ export default function App() {
     });
   };
 
-  // Salvar a validação do checklist pelo departamento
-  const handleSaveChecklist = (e: React.FormEvent) => {
+  // Salvar a validação do checklist pelo departamento via chamadas PUT na API transacional
+  const handleSaveChecklist = async (e: React.FormEvent) => {
     e.preventDefault();
     setValidationError(null);
     setEvaluationSuccess(null);
@@ -799,9 +829,8 @@ export default function App() {
     const itemsDoSetor = checklistMatriz.filter(item => item.role === userRole);
     let hasError = false;
 
-    // Regra de Negócio POP e Constraints SQL Server:
-    // 1. Validar se há justificativa para qualquer reprovação
-    // 2. Justificativa deve conter justificações ricas (mínimo 10 caracteres)
+    // Regra de Negócio POP:
+    // 1. Validar se há justificativa técnica mínima para reprovação
     for (const item of itemsDoSetor) {
       const evalItem = checklistEvaluations[item.id];
       if (evalItem) {
@@ -825,72 +854,48 @@ export default function App() {
 
     if (hasError) return;
 
-    // Atualiza respostas no "Banco de Dados" simulado de forma robusta
-    const simTime = getSimulatedTime();
-    
-    // Filtra fora as respostas antigas deste mesmo setor para esta GRD
-    const otherResp = respostas.filter(r => !(r.grdId === selectedGrdId && r.role === userRole));
-    
-    // Reconstrói as respostas para TODOS os itens ativos na matriz para este setor
-    const sectorNewResp: RespostaChecklist[] = itemsDoSetor.map(item => {
-      const existing = respostas.find(r => r.grdId === selectedGrdId && r.itemId === item.id);
-      const evalItem = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '', anexos: [] };
+    try {
+      // Atualiza de fato cada resposta no SQL Server
+      const updatePromises = itemsDoSetor.map(async (item) => {
+        const evalItem = checklistEvaluations[item.id] || { status: 'PENDENTE', justificativa: '' };
+        
+        // Encontra o ID real da RespostaChecklist que mapeamos no estado "respostas"
+        const rExistente = respostas.find(r => r.grdId === selectedGrdId && r.itemId === item.id);
+        
+        if (rExistente && rExistente.id) {
+          const body = {
+            status: evalItem.status,
+            justificativa: evalItem.justificativa.trim() || null,
+            avaliadoPor: evalItem.status !== 'PENDENTE' ? (Number(currentUser.id) || 1) : null
+          };
+
+          const response = await fetch(`${API_URL}/respostas/${rExistente.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+
+          if (!response.ok) {
+            throw new Error(`Erro ao salvar item ID #${item.id}. Status: ${response.status}`);
+          }
+        }
+      });
+
+      // Executa as atualizações em paralelo no SQL Server
+      await Promise.all(updatePromises);
+
+      // Sincroniza o estado global da aplicação com o banco atualizado
+      await fetchGrds();
+
+      setEvaluationSuccess(`Sucesso! Avaliações do setor ${setoresConfig[userRole].nome} gravadas de forma definitiva no SQL Server.`);
+      setSelectedGrdForDetail(null); // Fecha modal
       
-      return {
-        grdId: selectedGrdId,
-        itemId: item.id,
-        role: item.role,
-        status: evalItem.status,
-        justificativa: evalItem.justificativa || undefined,
-        avaliadoPor: evalItem.status !== 'PENDENTE' ? `${currentUser.nome} (${setoresConfig[userRole]?.nome || userRole})` : existing?.avaliadoPor,
-        avaliadoEm: evalItem.status !== 'PENDENTE' ? (existing?.avaliadoEm || simTime) : existing?.avaliadoEm,
-        anexos: evalItem.anexos || []
-      };
-    });
-
-    const updatedResp = [...otherResp, ...sectorNewResp];
-
-    // @ts-ignore
-    const todasRespostasGrd = updatedResp.filter(r => r.grdId === selectedGrdId);
-    const temReprovado = todasRespostasGrd.some(r => r.status === 'REPROVADO');
-    const todosAprovados = todasRespostasGrd.every(r => r.status === 'APROVADO');
-    
-    const currentGrd = grds.find(g => g.id === selectedGrdId);
-    let novoStatusGrd: 'EM_ANDAMENTO' | 'APROVADO' | 'REPROVADO' | 'SLA_EXPIRADO' = 'EM_ANDAMENTO';
-
-    if (temReprovado) {
-      novoStatusGrd = 'REPROVADO';
-    } else if (todosAprovados) {
-      novoStatusGrd = 'APROVADO';
-    } else {
-      // Verifica se o SLA já expirou
-      if (currentGrd && simTime > currentGrd.slaLimite) {
-        novoStatusGrd = 'SLA_EXPIRADO';
-      } else {
-        novoStatusGrd = 'EM_ANDAMENTO';
-      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error: any) {
+      console.error('[API Error] Erro ao salvar avaliações do checklist:', error);
+      setValidationError(`Falha ao registrar auditoria no SQL Server: ${error.message}`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-
-    const updatedGrds = grds.map(g => {
-      if (g.id === selectedGrdId) {
-        return {
-          ...g,
-          status: novoStatusGrd,
-          concluidoEm: (novoStatusGrd === 'APROVADO' || novoStatusGrd === 'REPROVADO') ? simTime : undefined
-        };
-      }
-      return g;
-    });
-
-    setGrds(updatedGrds);
-    setRespostas(updatedResp);
-    saveSimulatorState(updatedGrds, updatedResp, simulatedTimeHoursOffset, checklistMatriz, usuarios, selectedUserId, setoresConfig);
-
-    setEvaluationSuccess(`Sucesso! Avaliações do setor ${setoresConfig[userRole].nome} gravadas na GRD #${selectedGrdId} com total auditoria.`);
-    setSelectedGrdForDetail(null); // Close detail modal
-    
-    // Rola de volta para o topo da página do simulador para ver os feedbacks
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const generateCobrançaEmail = (grd: GRD) => {
@@ -923,11 +928,21 @@ ${currentUser.nome}
 Operador de Medições`;
   };
 
-  const handleTriggerCobranca = (grd: GRD) => {
+  const handleTriggerCobranca = async (grd: GRD) => {
     const emailText = generateCobrançaEmail(grd);
     setCobrancaEmailDraft(emailText);
     setGrdForCobranca(grd);
     setIsCopied(false);
+
+    try {
+      // Dispara simulação de e-mail integrada à API real
+      await fetch(`${API_URL}/grds/${grd.id}/cobranca`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      console.error('[API Error] Falha ao acionar simulação de e-mail na API:', error);
+    }
   };
 
   // Funções Auxiliares de Estatísticas e Tempos para a UI

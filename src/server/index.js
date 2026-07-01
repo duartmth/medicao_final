@@ -361,12 +361,328 @@ app.put('/api/respostas/:id', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/usuarios
+ * Lista todos os usuários ativos integrados com seus respectivos setores
+ */
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    const result = await req.db.request().query(`
+      SELECT 
+        u.[UsuarioID] AS id,
+        u.[Nome] AS nome,
+        u.[Login] AS username,
+        u.[Email] AS email,
+        s.[SiglaSetor] AS role,
+        CASE 
+          WHEN s.[SiglaSetor] = 'MEDICAO' THEN 'ROOT'
+          ELSE 'OPERADOR'
+        END AS tipo
+      FROM [Medicao].[Usuarios] u
+      INNER JOIN [Medicao].[Setores] s ON u.[SetorID] = s.[SetorID]
+      WHERE u.[Ativo] = 1
+    `);
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('[API Error] Erro ao buscar usuários:', error);
+    res.status(500).json({ error: 'Erro ao listar usuários.', details: error.message });
+  }
+});
+
+/**
+ * POST /api/usuarios
+ * Cria um novo usuário no sistema vinculando-o ao setor correto com base na role informada
+ */
+app.post('/api/usuarios', async (req, res) => {
+  const { nome, username, email, password, role, tipo } = req.body;
+
+  if (!nome || !username || !email || !role) {
+    return res.status(400).json({ error: 'Os campos nome, username, email e role são obrigatórios.' });
+  }
+
+  try {
+    // 1. Busca o SetorID com base na sigla (role) informada
+    const sectorResult = await req.db.request()
+      .input('Sigla', mssql.VarChar, role)
+      .query('SELECT [SetorID] FROM [Medicao].[Setores] WHERE [SiglaSetor] = @Sigla AND [Ativo] = 1');
+
+    if (sectorResult.recordset.length === 0) {
+      return res.status(400).json({ error: `O setor correspondente à sigla '${role}' não foi encontrado ou está inativo.` });
+    }
+
+    const setorId = sectorResult.recordset[0].SetorID;
+
+    // 2. Insere o novo usuário
+    await req.db.request()
+      .input('Nome', mssql.VarChar, nome)
+      .input('Email', mssql.VarChar, email)
+      .input('Login', mssql.VarChar, username)
+      .input('SenhaHash', mssql.VarChar, password || '123') // Simulado ou senha direta para homologação
+      .input('SetorID', mssql.Int, setorId)
+      .query(`
+        INSERT INTO [Medicao].[Usuarios] 
+          (Nome, Email, Login, SenhaHash, SetorID, Ativo, CriadoEm)
+        VALUES 
+          (@Nome, @Email, @Login, @SenhaHash, @SetorID, 1, GETDATE());
+      `);
+
+    res.status(201).json({ success: true, message: 'Usuário cadastrado com sucesso no banco de dados.' });
+  } catch (error) {
+    console.error('[API Error] Erro ao criar usuário:', error);
+    res.status(500).json({ error: 'Erro ao gravar usuário no banco de dados.', details: error.message });
+  }
+});
+
+/**
+ * DELETE /api/usuarios/:id
+ * Remove (desativa) um usuário do sistema
+ */
+app.delete('/api/usuarios/:id', async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+
+  try {
+    await req.db.request()
+      .input('UsuarioID', mssql.Int, userId)
+      .query('UPDATE [Medicao].[Usuarios] SET [Ativo] = 0 WHERE [UsuarioID] = @UsuarioID');
+
+    res.json({ success: true, message: 'Usuário desativado com sucesso no banco.' });
+  } catch (error) {
+    console.error('[API Error] Erro ao deletar usuário:', error);
+    res.status(500).json({ error: 'Erro ao remover usuário.', details: error.message });
+  }
+});
+
+/**
+ * GET /api/checklist-matriz
+ * Retorna os itens de checklist ativos do POP
+ */
+app.get('/api/checklist-matriz', async (req, res) => {
+  try {
+    const result = await req.db.request().query(`
+      SELECT 
+        m.[ChecklistItemID] AS id,
+        s.[SiglaSetor] AS role,
+        m.[DescricaoItem] AS descricao,
+        m.[InstrucoesPOP] AS instrucaoPop
+      FROM [Medicao].[Matriz_Checklist] m
+      INNER JOIN [Medicao].[Setores] s ON m.[SetorID] = s.[SetorID]
+      WHERE m.[Ativo] = 1
+    `);
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('[API Error] Erro ao buscar matriz de checklist:', error);
+    res.status(500).json({ error: 'Erro ao listar matriz de checklist.', details: error.message });
+  }
+});
+
+/**
+ * POST /api/checklist-matriz
+ * Adiciona um novo item normativo do POP à Matriz de Checklist do banco
+ */
+app.post('/api/checklist-matriz', async (req, res) => {
+  const { role, descricao, instrucaoPop } = req.body;
+
+  if (!role || !descricao) {
+    return res.status(400).json({ error: 'Os campos role (Sigla do Setor) e descricao são obrigatórios.' });
+  }
+
+  try {
+    const sectorResult = await req.db.request()
+      .input('Sigla', mssql.VarChar, role)
+      .query('SELECT [SetorID] FROM [Medicao].[Setores] WHERE [SiglaSetor] = @Sigla');
+
+    if (sectorResult.recordset.length === 0) {
+      return res.status(400).json({ error: `Setor '${role}' inválido.` });
+    }
+
+    const setorId = sectorResult.recordset[0].SetorID;
+
+    await req.db.request()
+      .input('SetorID', mssql.Int, setorId)
+      .input('DescricaoItem', mssql.VarChar, descricao)
+      .input('InstrucoesPOP', mssql.VarChar, instrucaoPop || '')
+      .query(`
+        INSERT INTO [Medicao].[Matriz_Checklist] 
+          (SetorID, DescricaoItem, InstrucoesPOP, Ativo)
+        VALUES 
+          (@SetorID, @DescricaoItem, @InstrucoesPOP, 1)
+      `);
+
+    res.status(201).json({ success: true, message: 'Item do checklist adicionado com sucesso.' });
+  } catch (error) {
+    console.error('[API Error] Erro ao criar item de checklist:', error);
+    res.status(500).json({ error: 'Erro ao gravar item de checklist.', details: error.message });
+  }
+});
+
+/**
+ * DELETE /api/checklist-matriz/:id
+ * Desativa um item da matriz de checklist
+ */
+app.delete('/api/checklist-matriz/:id', async (req, res) => {
+  const itemId = parseInt(req.params.id, 10);
+
+  try {
+    await req.db.request()
+      .input('ChecklistItemID', mssql.Int, itemId)
+      .query('UPDATE [Medicao].[Matriz_Checklist] SET [Ativo] = 0 WHERE [ChecklistItemID] = @ChecklistItemID');
+
+    res.json({ success: true, message: 'Item de checklist desativado com sucesso.' });
+  } catch (error) {
+    console.error('[API Error] Erro ao desativar item de checklist:', error);
+    res.status(500).json({ error: 'Erro ao remover item de checklist.', details: error.message });
+  }
+});
+
+/**
+ * POST /api/grds/:id/cobranca
+ * Dispara notificação de cobrança de pendência (simulada por e-mail)
+ */
+app.post('/api/grds/:id/cobranca', async (req, res) => {
+  const { emailDestinatario, corpoEmail } = req.body;
+
+  if (!emailDestinatario || !corpoEmail) {
+    return res.status(400).json({ error: 'Destinatário e corpo do e-mail são obrigatórios.' });
+  }
+
+  try {
+    console.log(`[Email Simulado] Enviando cobrança de GRD para: ${emailDestinatario}`);
+    console.log(`[Conteúdo]:\n${corpoEmail}\n---`);
+
+    // Resposta de sucesso imediata simulando o envio SMTP
+    res.json({ 
+      success: true, 
+      message: `E-mail de notificação enviado com sucesso para ${emailDestinatario}!` 
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Falha ao enviar e-mail de cobrança.', details: error.message });
+  }
+});
+
 // ==========================================
-// 4. INICIALIZAÇÃO DO SERVIDOR
+// 4. FUNÇÃO DE AUTO-SEED DAS SEMENTES DO POP
 // ==========================================
-app.listen(PORT, '0.0.0.0', () => {
+async function inicializarSementes(db) {
+  try {
+    // 1. Cria o Schema 'Medicao' caso não exista no SQL Server (útil se o banco for novo)
+    try {
+      await db.request().query(`
+        IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'Medicao')
+        BEGIN
+          EXEC('CREATE SCHEMA [Medicao]')
+        END
+      `);
+    } catch (e) {
+      console.log('[Seed] Schema Medicao já existe ou erro ignorado:', e.message);
+    }
+
+    // 2. Verifica e insere Setores
+    const setoresCount = await db.request().query('SELECT COUNT(*) AS Qtd FROM [Medicao].[Setores]');
+    if (setoresCount.recordset[0].Qtd === 0) {
+      console.log('[Seed] Semeando setores padrão do POP Digital...');
+      const setores = [
+        { nome: 'Setor de Medição e Contratos', sigla: 'MEDICAO' },
+        { nome: 'Obrigações Trabalhistas', sigla: 'TRABALHISTA' },
+        { nome: 'Obrigações Fiscais e Tributárias', sigla: 'FISCAL' },
+        { nome: 'Equipe Técnica de Engenharia', sigla: 'TECNICA' },
+        { nome: 'Departamento Financeiro', sigla: 'FINANCEIRA' },
+        { nome: 'Qualidade, Saúde, Segurança e Meio Ambiente (QSSMA)', sigla: 'QSSMA' }
+      ];
+
+      for (const s of setores) {
+        await db.request()
+          .input('Nome', mssql.VarChar, s.nome)
+          .input('Sigla', mssql.VarChar, s.sigla)
+          .query('INSERT INTO [Medicao].[Setores] (NomeSetor, SiglaSetor, Ativo) VALUES (@Nome, @Sigla, 1)');
+      }
+    }
+
+    // 3. Verifica e insere Usuários Padrão
+    const usuariosCount = await db.request().query('SELECT COUNT(*) AS Qtd FROM [Medicao].[Usuarios]');
+    if (usuariosCount.recordset[0].Qtd === 0) {
+      console.log('[Seed] Semeando usuários padrão do POP Digital...');
+      const usuarios = [
+        { nome: 'Carlos Silva', username: 'carlos.medicao', email: 'carlos.medicao@empresa.com', senha: '123', role: 'MEDICAO' },
+        { nome: 'Mariana Costa', username: 'mariana.trabalhista', email: 'mariana.trabalhista@empresa.com', senha: '123', role: 'TRABALHISTA' },
+        { nome: 'Roberto Dias', username: 'roberto.fiscal', email: 'roberto.fiscal@empresa.com', senha: '123', role: 'FISCAL' },
+        { nome: 'Amanda Oliveira', username: 'amanda.tecnica', email: 'amanda.tecnica@empresa.com', senha: '123', role: 'TECNICA' },
+        { nome: 'Julio Santos', username: 'julio.financeiro', email: 'julio.financeiro@empresa.com', senha: '123', role: 'FINANCEIRA' },
+        { nome: 'Fernanda Lima', username: 'fernanda.qssma', email: 'fernanda.qssma@empresa.com', senha: '123', role: 'QSSMA' },
+        { nome: 'Administrador Geral', username: 'root', email: 'root@empresa.com', senha: 'admin', role: 'MEDICAO' },
+        { nome: 'Juliana Vieira (Gerente)', username: 'gerente', email: 'gerente@empresa.com', senha: '123', role: 'MEDICAO' }
+      ];
+
+      for (const u of usuarios) {
+        const sectorResult = await db.request()
+          .input('Sigla', mssql.VarChar, u.role)
+          .query('SELECT [SetorID] FROM [Medicao].[Setores] WHERE [SiglaSetor] = @Sigla');
+        
+        if (sectorResult.recordset.length > 0) {
+          const setorId = sectorResult.recordset[0].SetorID;
+          await db.request()
+            .input('Nome', mssql.VarChar, u.nome)
+            .input('Email', mssql.VarChar, u.email)
+            .input('Login', mssql.VarChar, u.username)
+            .input('SenhaHash', mssql.VarChar, u.senha)
+            .input('SetorID', mssql.Int, setorId)
+            .query('INSERT INTO [Medicao].[Usuarios] (Nome, Email, Login, SenhaHash, SetorID, Ativo, CriadoEm) VALUES (@Nome, @Email, @Login, @SenhaHash, @SetorID, 1, GETDATE())');
+        }
+      }
+    }
+
+    // 4. Verifica e insere Itens de Checklist Padrão
+    const matrizCount = await db.request().query('SELECT COUNT(*) AS Qtd FROM [Medicao].[Matriz_Checklist]');
+    if (matrizCount.recordset[0].Qtd === 0) {
+      console.log('[Seed] Semeando itens padrão de checklist do POP...');
+      const itens = [
+        { role: 'TRABALHISTA', desc: 'Comprovação de pagamento de salários e benefícios (folha assinada ou extrato).', pop: 'POP Seção 3.1: Verificar se os CPFs coincidem com a lista ativa homologada.' },
+        { role: 'TRABALHISTA', desc: 'Recolhimentos GFIP/SEFIP, FGTS e GPS das guias correspondentes ao período medido.', pop: 'POP Seção 3.2: Exigir o comprovante eletrônico de autenticação bancária.' },
+        { role: 'TRABALHISTA', desc: 'Termos de Rescisão de Contrato de Trabalho (TRCT) homologados com quitação (se aplicável).', pop: 'POP Seção 3.3: Obrigatório para demitidos no ciclo vigente.' },
+        { role: 'FISCAL', desc: 'Nota Fiscal de Serviço devidamente preenchida e com destaques de retenção na fonte.', pop: 'POP Seção 4.1: Validar ISSQN, INSS, PIS/COFINS de acordo com as alíquotas contratuais.' },
+        { role: 'FISCAL', desc: 'Certidões Negativas de Débitos (Federal, Estadual, Municipal) ativas na data da medição.', pop: 'POP Seção 4.2: Emitir segunda via do órgão oficial caso a validade vença em < 5 dias.' },
+        { role: 'TECNICA', desc: 'Diário de Obra preenchido, assinado pelo preposto e validado pelo fiscal.', pop: 'POP Seção 5.1: Todas as ocorrências do ciclo de medição devem ser anexadas.' },
+        { role: 'TECNICA', desc: 'Termo de Recebimento Provisório do Escopo ou Relatório de Medição Física assinado.', pop: 'POP Seção 5.2: Crucial conferir quantidades contra a planilha orçamentária.' },
+        { role: 'FINANCEIRA', desc: 'Comprovante de pagamento de caução de boa execução ou Seguro Garantia ativo.', pop: 'POP Seção 6.1: Validar se o valor do seguro cobre o valor residual do escopo.' },
+        { role: 'FINANCEIRA', desc: 'Certidão de Regularidade do FGTS (CRF) emitida pela Caixa Econômica Federal.', pop: 'POP Seção 6.2: Obrigatório para inserção no lote de liquidação.' },
+        { role: 'QSSMA', desc: 'Comprovação de entrega de EPIs (Fichas assinadas) de todos os colaboradores alocados.', pop: 'POP Seção 7.1: Os equipamentos devem corresponder aos riscos descritos na APR.' },
+        { role: 'QSSMA', desc: 'Comprovante de destinação de resíduos (MTR / CTR) homologado pelos órgãos.', pop: 'POP Seção 7.2: Exigido para resíduos de obras civis ou produtos industriais químicos.' }
+      ];
+
+      for (const item of itens) {
+        const sectorResult = await db.request()
+          .input('Sigla', mssql.VarChar, item.role)
+          .query('SELECT [SetorID] FROM [Medicao].[Setores] WHERE [SiglaSetor] = @Sigla');
+
+        if (sectorResult.recordset.length > 0) {
+          const setorId = sectorResult.recordset[0].SetorID;
+          await db.request()
+            .input('SetorID', mssql.Int, setorId)
+            .input('Desc', mssql.VarChar, item.desc)
+            .input('Pop', mssql.VarChar, item.pop)
+            .query('INSERT INTO [Medicao].[Matriz_Checklist] (SetorID, DescricaoItem, InstrucoesPOP, Ativo) VALUES (@SetorID, @Desc, @Pop, 1)');
+        }
+      }
+    }
+    console.log('[Seed] Inicialização de sementes finalizada com sucesso.');
+  } catch (err) {
+    console.warn('[Seed Warn] Não foi possível verificar ou executar a semeadura automática (as tabelas podem não ter sido criadas ainda):', err.message);
+  }
+}
+
+// ==========================================
+// 5. INICIALIZAÇÃO DO SERVIDOR
+// ==========================================
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[Server] API do POP Digital rodando com sucesso na porta ${PORT}`);
   console.log(`[Server] Endpoints ativos em: http://localhost:${PORT}/api/*`);
+
+  // Tenta rodar a semeadura automática pós-inicialização
+  try {
+    await poolConnect;
+    await inicializarSementes(pool);
+  } catch (err) {
+    console.error('[Server Error] Erro ao conectar banco de dados para semeadura:', err.message);
+  }
 });
 
 module.exports = app; // Para testes unitários

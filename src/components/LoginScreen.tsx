@@ -150,53 +150,6 @@ export default function LoginScreen({ usuarios, onLogin }: LoginScreenProps) {
             </form>
           </div>
 
-          {/* Quick-test simulation credentials */}
-          <div className="pt-6 border-t border-slate-100 mt-6">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                Acesso Rápido para Simulação / Perfis
-              </h3>
-              <span className="text-[9px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold uppercase">
-                Clique para auto-preencher
-              </span>
-            </div>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {usuarios.map((u) => {
-                let badgeColor = "bg-slate-100 text-slate-600 border-slate-200";
-                if (u.tipo === "ROOT") {
-                  badgeColor = "bg-rose-50 text-rose-700 border-rose-100";
-                } else if (u.tipo === "GERENCIADOR") {
-                  badgeColor = "bg-amber-50 text-amber-700 border-amber-100";
-                } else if (u.role === "MEDICAO") {
-                  badgeColor = "bg-blue-50 text-blue-700 border-blue-100";
-                } else {
-                  badgeColor = "bg-purple-50 text-purple-700 border-purple-100";
-                }
-
-                return (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => handleQuickLogin(u)}
-                    className="text-left p-2 border border-slate-150 hover:border-indigo-300 rounded-xl bg-slate-50/50 hover:bg-indigo-50/30 transition-all cursor-pointer group"
-                  >
-                    <p className="text-[10px] font-bold text-slate-800 line-clamp-1 group-hover:text-indigo-600 transition-colors">
-                      {u.nome}
-                    </p>
-                    <div className="flex gap-1 items-center mt-1">
-                      <span className={`text-[8px] font-extrabold px-1 py-0.2 rounded border ${badgeColor}`}>
-                        {u.tipo}
-                      </span>
-                      <span className="text-[8px] text-slate-400 font-semibold uppercase">
-                        {u.role}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
         </div>
 
       </div>

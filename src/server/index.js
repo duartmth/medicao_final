@@ -4,12 +4,25 @@
  * Tecnologia: Node.js + Express + Microsoft SQL Server (mssql)
  */
 
+import { details } from 'motion/react-client';
+
 const express = require('express');
 const cors = require('cors');
 const mssql = require('mssql');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const nodemailer = require('nodemailer');
+
+const transponder = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.seudominio.com',
+  port: process.env.SMTP_PORT || 587,
+  auth: {
+    user: process.env.SMTP_USER || 'sistema@seudominio.com',
+    pass: process.env.SMTP_PASS || 'sua_senha'
+  }
+});
 
 // ==========================================
 // 1. CONFIGURAÇÕES & MIDDLEWARES
@@ -181,25 +194,24 @@ app.get('/api/grds', async (req, res) => {
  * Cria um novo cabeçalho de GRD e instancia automaticamente todo o checklist pendente
  * transacionado na tabela GRD_Respostas com base na Matriz_Checklist ativa do POP.
  */
-app.post('/api/grds', async (req, res) => {
-  const { numeroContrato, nomeFornecedor, escopoResumido, criadoPor } = req.body;
 
-  // Validação básica de payload
+app.post('/api/grds', async (req, res) => {
+  // NOVO: Recebendo o array de setoresEnvolvidos
+  const { numeroContrato, nomeFornecedor, escopoResumido, criadoPor, setoresEnvolvidos } = req.body;
+
   if (!numeroContrato || !nomeFornecedor || !criadoPor) {
     return res.status(400).json({ error: 'Os campos numeroContrato, nomeFornecedor e criadoPor são obrigatórios.' });
   }
 
-  // Abre uma Transação no banco SQL Server
   const transaction = new mssql.Transaction(req.db);
 
   try {
     await transaction.begin();
 
-    // 1. Definição do SLA do Procedimento Operacional Padrão (48 Horas Corridas)
     const criadoEm = new Date();
     const slaLimite = new Date(criadoEm.getTime() + (48 * 60 * 60 * 1000));
 
-    // 2. Insere o cabeçalho mestre
+    // 1. Insere o cabeçalho mestre
     const headerResult = await transaction.request()
       .input('NumeroContrato', mssql.VarChar, numeroContrato)
       .input('NomeFornecedor', mssql.VarChar, nomeFornecedor)
@@ -217,21 +229,29 @@ app.post('/api/grds', async (req, res) => {
 
     const newGrdId = headerResult.recordset[0].GRDID;
 
-    // 3. Recupera os itens estáticos de verificação do POP ativos na matriz
-    const activeItemsResult = await transaction.request()
-      .query(`
-        SELECT [ChecklistItemID] 
-        FROM [Medicao].[Matriz_Checklist] 
-        WHERE [Ativo] = 1
-      `);
+    // 2. LÓGICA DE SETORES: Monta a query para pegar itens só dos setores escolhidos
+    let queryItensAtivos = `
+      SELECT m.[ChecklistItemID] 
+      FROM [Medicao].[Matriz_Checklist] m
+      INNER JOIN [Medicao].[Setores] s ON m.SetorID = s.SetorID
+      WHERE m.[Ativo] = 1
+    `;
 
+    // Se o usuário selecionou setores específicos no Frontend, filtra por eles
+    if (setoresEnvolvidos && setoresEnvolvidos.length > 0) {
+      // Transforma ['TRABALHISTA', 'FISCAL'] em "'TRABALHISTA','FISCAL'" para o SQL
+      const setoresSQL = setoresEnvolvidos.map(s => `'${s}'`).join(',');
+      queryItensAtivos += ` AND s.SiglaSetor IN (${setoresSQL})`;
+    }
+
+    const activeItemsResult = await transaction.request().query(queryItensAtivos);
     const activeItems = activeItemsResult.recordset;
 
     if (activeItems.length === 0) {
-      throw new Error('Nenhum item ativo encontrado na Matriz de Checklist do POP para instanciamento.');
+      throw new Error('Nenhum item de checklist encontrado para os setores selecionados.');
     }
 
-    // 4. Instancia cada item como PENDENTE associado a esta GRD
+    // 3. Instancia as respostas do checklist
     for (const item of activeItems) {
       await transaction.request()
         .input('GRDID', mssql.Int, newGrdId)
@@ -244,23 +264,60 @@ app.post('/api/grds', async (req, res) => {
         `);
     }
 
-    // Comita a transação para o disco
     await transaction.commit();
-    console.log(`[Success] GRD #${newGrdId} criada e checklist inicializado para o contrato ${numeroContrato}.`);
+
+    // ==========================================
+    // 4. LÓGICA DE E-MAIL: Notifica os usuários envolvidos (Após o commit)
+    // ==========================================
+    try {
+      // Busca os e-mails apenas dos usuários que pertencem aos setores envolvidos nesta GRD
+      let emailQuery = `
+        SELECT u.Email, u.Nome 
+        FROM [Medicao].[Usuarios] u
+        INNER JOIN [Medicao].[Setores] s ON u.SetorID = s.SetorID
+        WHERE u.Ativo = 1 AND u.Email IS NOT NULL
+      `;
+      
+      if (setoresEnvolvidos && setoresEnvolvidos.length > 0) {
+        const setoresSQL = setoresEnvolvidos.map(s => `'${s}'`).join(',');
+        emailQuery += ` AND s.SiglaSetor IN (${setoresSQL})`;
+      }
+
+      const usersResult = await req.db.request().query(emailQuery);
+      const destinatarios = usersResult.recordset.map(u => u.Email).filter(e => e);
+
+      if (destinatarios.length > 0) {
+        await transporter.sendMail({
+          from: '"POP Digital" <sistema@seudominio.com>',
+          to: destinatarios.join(','), // Manda para todos os envolvidos
+          subject: `🚨 Nova Medição Final Pendente - Contrato: ${numeroContrato}`,
+          html: `
+            <h3>Nova Medição Disponível para Avaliação</h3>
+            <p>Olá equipe,</p>
+            <p>Uma nova GRD foi aberta para o fornecedor <b>${nomeFornecedor}</b> (Contrato ${numeroContrato}).</p>
+            <p>Por favor, acesse o sistema POP Digital para realizar a avaliação do seu checklist.</p>
+            <p>Prazo SLA: 48 horas.</p>
+          `
+        });
+        console.log(`[Email] Notificações enviadas para ${destinatarios.length} usuários.`);
+      }
+    } catch (emailError) {
+      console.error('[Email Error] A GRD foi criada, mas houve erro ao enviar o e-mail:', emailError);
+      // Não damos rollback na transação só porque o e-mail falhou
+    }
 
     res.status(201).json({ 
       success: true, 
       grdId: newGrdId,
-      message: 'GRD e checklist do POP inicializados com sucesso.' 
+      message: 'GRD e checklist inicializados com sucesso.' 
     });
 
   } catch (error) {
-    // Desfaz as alterações em caso de qualquer exceção
     await transaction.rollback();
-    console.error('[Transaction Error] Falha ao criar GRD e checklists associados:', error);
+    console.error('[Transaction Error] Falha ao criar GRD:', error);
     res.status(500).json({ error: 'Erro transacional ao criar GRD.', details: error.message });
   }
-});
+});;
 
 /**
  * PUT /api/respostas/:id
@@ -449,6 +506,42 @@ app.delete('/api/usuarios/:id', async (req, res) => {
   } catch (error) {
     console.error('[API Error] Erro ao deletar usuário:', error);
     res.status(500).json({ error: 'Erro ao remover usuário.', details: error.message });
+  }
+});
+/**
+ * PUT /api/usuarios/:id
+ * Atualiza os dados de um usuário existente.
+ * Matheus (1/7/26)
+ */
+app.put('/api/usuarios/:id', async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const { nome, username, email, role, password } = req.body; 
+
+  try {
+    const sectorResult = await req.db.request()
+      .input('Sigla', mssql.VarChar, role)
+      .query('SELECT [SetorID] FROM [Medicao].[Setores] WHERE [SiglaSetor] = @Sigla');
+    
+    if (sectorResult.recordset.length === 0) {
+      return res.status(400).json({error: 'Setor inválido' });
+    }
+  const setorId = sectorResult.recordset[0].setorID;
+
+  await req.db.request()
+    .input('UsuarioID', mssql.Int, userId)
+    .input('Nome', mssql.VarChar, nome)
+    .input('Email', mssql.VarChar, email)
+    .input('Login', mssql.VarChar, username)
+    .input('SetorID', mssql.Int, setorId)
+    .query(`
+      UPDATE [Medicao].[Usuarios] 
+      SET [Nome] = @Nome, [Email] = @Email, [Login] = @Login, [SetorID] = @SetorID
+      WHERE [UsuarioID] = @UsuarioID
+    `);
+  res.json({ success: true, message: 'Usuário atualizado com sucesso.'});
+  } catch (error) {
+    console.error('[API Error] Erro ao atualizar usuário:', error);
+    res.status(500).json({error: 'Erro ao atualizar usuário.', details: error.message });
   }
 });
 
